@@ -990,3 +990,87 @@ describe('协议可切换（下拉框）', () => {
     }
   });
 });
+
+
+describe('第三方站点兼容（new-api / sub2api 的真实响应形态）', () => {
+  /**
+   * 这些站点没有 /v1/token/group，但返回方式不止 404 一种：
+   *   - 404 + HTML（网关兜底）
+   *   - 404 + {"success":false}
+   *   - 200 + {"success":false}（部分实现用 200 报错）
+   *   - 200 + {"data":{}}（字段缺失）
+   * 关键要求：都不能影响模型目录与调用。
+   */
+  function makeThirdPartyRelay(groupResponse) {
+    const server = createServer((req, res) => {
+      const url = new URL(req.url ?? '/', 'http://localhost');
+      if (url.pathname === '/v1/token/group') {
+        res.writeHead(groupResponse.status, { 'Content-Type': groupResponse.type });
+        res.end(groupResponse.body);
+        return;
+      }
+      if (url.pathname === '/v1/models') {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ object: 'list', data: [{ id: 'tp-model' }] }));
+        return;
+      }
+      res.writeHead(404); res.end('{}');
+    });
+    return server;
+  }
+
+  async function stateFor(groupResponse) {
+    const dshHome = mkdtempSync(join(tmpdir(), 'dsh-aimy-3p-'));
+    const relay = makeThirdPartyRelay(groupResponse);
+    await new Promise((r) => relay.listen(0, '127.0.0.1', r));
+    const baseURL = 'http://127.0.0.1:' + relay.address().port;
+    const credentials = makeFakeCredentials();
+    try {
+      const plugin = await startPlugin(baseURL, dshHome, { credentials });
+      await json(plugin.base + '/credentials?profile=compat', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ apiKey: KEY }),
+      });
+      await json(plugin.base + '/config?profile=compat', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ baseURL, api: 'openai-completions' }),
+      });
+      const { body } = await json(plugin.base + '/state?profile=compat');
+      await new Promise((r) => plugin.server.close(r));
+      return body.data;
+    } finally {
+      await new Promise((r) => relay.close(r));
+      rmSync(dshHome, { recursive: true, force: true });
+    }
+  }
+
+  it('404 + HTML 兜底页：模型仍可用，只是不能切组', async () => {
+    const data = await stateFor({ status: 404, type: 'text/html', body: '<html>not found</html>' });
+    assert.equal(data.supportsSwitch, false);
+    assert.equal(data.connected, true, '不能因为分组接口缺失而整体失败');
+    assert.deepEqual(data.models.map((m) => m.id), ['tp-model']);
+  });
+
+  it('404 + JSON success:false：同样降级', async () => {
+    const data = await stateFor({ status: 404, type: 'application/json', body: JSON.stringify({ success: false, message: 'invalid url' }) });
+    assert.equal(data.supportsSwitch, false);
+    assert.equal(data.connected, true);
+    assert.deepEqual(data.models.map((m) => m.id), ['tp-model']);
+  });
+
+  it('200 但 data 为空对象：不能崩，模型仍可用', async () => {
+    const data = await stateFor({ status: 200, type: 'application/json', body: JSON.stringify({ data: {} }) });
+    assert.equal(data.connected, true);
+    assert.deepEqual(data.models.map((m) => m.id), ['tp-model']);
+    // 分组信息缺失时不该被当成可切组
+    assert.ok(data.token === null || data.supportsSwitch === false, '空分组信息不应声称支持切组');
+  });
+
+  it('200 但 success:false：不能崩，模型仍可用', async () => {
+    const data = await stateFor({ status: 200, type: 'application/json', body: JSON.stringify({ success: false, message: 'unsupported' }) });
+    assert.equal(data.connected, true);
+    assert.deepEqual(data.models.map((m) => m.id), ['tp-model']);
+  });
+});

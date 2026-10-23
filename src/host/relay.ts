@@ -103,6 +103,18 @@ function extractMessage(body: unknown): string | undefined {
 export async function fetchTokenGroup(opts: RelayOptions): Promise<TokenGroupState> {
   const body = await request<{ data?: Record<string, unknown> }>(opts, '/v1/token/group');
   const data = body.data ?? {};
+
+  /**
+   * 第三方站点（new-api / sub2api 等）常有「接口存在但没实现」的形态：
+   * 返回 200 + {"success":true} 但 data 里既没有 group 也没有 groups。
+   * 这种站点的分组能力应当视为**不可用**，否则界面会显示一个点了没反应的
+   * 「切换分组」按钮。有 group 或 groups 任一才算真的支持。
+   */
+  const hasGroup = typeof data.group === 'string' && data.group.length > 0;
+  const hasGroups = Array.isArray(data.groups) && (data.groups as unknown[]).length > 0;
+  if (!hasGroup && !hasGroups) {
+    throw new RelayError('该站点未提供分组接口（/v1/token/group 无有效数据）', 404, 'not-found');
+  }
   return {
     group: String(data.group ?? ''),
     backupGroup: String(data.backup_group ?? ''),

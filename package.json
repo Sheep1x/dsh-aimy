@@ -18,7 +18,8 @@
     "locale",
     "cordis.patch.yml",
     "README.md",
-    "assets"
+    "assets",
+    "LICENSE"
   ],
   "license": "MIT",
   "scripts": {
@@ -77,5 +78,6 @@
     "new-api",
     "sub2api"
   ],
-  "icon": "assets/icon-180.png"
+  "icon": "assets/icon-180.png",
+  "author": "Sheep1x"
 }

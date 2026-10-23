@@ -300,3 +300,10 @@ ctx.plugin(PiAiAdapter, {
 `createVolatile()` 返回的是**冻结快照**，写入通道是内部 symbol（只有 Loader 能提交），
 插件侧无法原地修改。所以目录变化时 dispose 旧 fiber、用新配置再挂一次；
 模型集合未变时短路跳过（避免无意义抖动）。
+
+## License
+
+[MIT](LICENSE) © Sheep1x
+
+> 注意区分用词：本文档里的「协议」若出现在「三种协议 / 线路协议 / OpenAI Responses」
+> 语境下，指的是**模型线路协议**（wire protocol）；**开源许可**一律写作「License」。

@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "dsh-Aimy",
+    "description": "用 Aimy 中转站的模型，并在设置页真实切换分组（模型列表、候选渠道、计费倍率同步变化）；兼容 new-api / sub2api。"
+  }
+}

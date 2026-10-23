@@ -1,0 +1,98 @@
+/** 两侧共用的类型：host 与 client 都只依赖这里的纯类型。 */
+
+export interface RelayGroup {
+  symbol: string;
+  name: string;
+  ratio: number;
+  public: boolean;
+}
+
+export interface RelayModel {
+  id: string;
+  name?: string;
+}
+
+/** 中转站令牌分组状态：对应 GET /v1/token/group 的 data。 */
+export interface TokenGroupState {
+  group: string;
+  backupGroup: string;
+  ratio: number;
+  allowGroupSwitch: boolean;
+  groups: RelayGroup[];
+}
+
+/** 密钥的存储状态（描述，从不包含密钥值）。 */
+export interface CredentialStatus {
+  configured: boolean;
+  source?: string;
+  writable: boolean;
+}
+
+/** 模型路由（pi-ai 挂载）的当前状态。 */
+export interface ProviderState {
+  routeName: string;
+  mounted: boolean;
+  modelCount: number;
+  error?: string;
+}
+
+/** 当前默认模型选择（来自 agentDefaultModel 服务）。 */
+export interface ModelSelection {
+  provider: string;
+  model: string;
+}
+
+export type ProfileId = 'aimy' | 'compat';
+
+/** 插件对客户端暴露的完整状态。 */
+export interface PluginState {
+  profile: ProfileId;
+  displayName: string;
+  /** 预设档案不返回地址（界面也不展示）*/
+  baseURL: string;
+  /** true 表示该档案是内置预设，地址不可编辑、不展示 */
+  preset: boolean;
+  api: 'openai-completions' | 'anthropic-messages';
+  /** 兼容模式是否已填地址 */
+  configured: boolean;
+  connected: boolean;
+  /** 中转站不支持切组接口（404）时为 false，界面应降级为只读 */
+  supportsSwitch: boolean;
+  token: TokenGroupState | null;
+  models: RelayModel[];
+  modelsFetchedAt: number;
+  provider: ProviderState | null;
+  credential: CredentialStatus | null;
+  /** 当前默认模型选择 */
+  selection: ModelSelection | null;
+  /** 选中模型不在本路由当前目录里（切组后常见）——只提示，不自动改选 */
+  staleModel: boolean;
+  error?: string;
+}
+
+export interface SwitchResult {
+  state: PluginState;
+  /** 切换成功但模型目录刷新/重挂载失败时的提示 */
+  warning?: string;
+}
+
+export function emptyState(baseURL: string, overrides: Partial<PluginState> = {}): PluginState {
+  return {
+    profile: 'aimy',
+    displayName: '',
+    preset: false,
+    api: 'openai-completions',
+    configured: true,
+    ...overrides,
+    baseURL,
+    connected: false,
+    supportsSwitch: false,
+    token: null,
+    models: [],
+    modelsFetchedAt: 0,
+    provider: null,
+    credential: null,
+    selection: null,
+    staleModel: false,
+  };
+}

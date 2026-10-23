@@ -1,0 +1,5 @@
+node_modules/
+# 构建产物：npm run build 生成；不入库（npm 发布时用 prepack 触发构建）
+lib/
+*.log
+*.tgz

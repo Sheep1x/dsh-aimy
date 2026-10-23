@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "dsh-Aimy",
+    "description": "Use Aimy relay models in DSH and switch billing group in place; also supports new-api / sub2api gateways."
+  }
+}

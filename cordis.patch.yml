@@ -1,0 +1,34 @@
+# dsh-aimy 的 bundle patch：把插件挂进 DSH 配置树。
+#
+# - id 必须全局唯一且与包名一致（插件市场按它比对 entry ID）。
+# - name 解析到包的 main 入口（lib/index.js，宿主半侧）。
+# - package.json 里声明了 dsh.client，DSH 模块系统会同时把本包扫描为浏览器插件，
+#   提供 /plugins/dsh-aimy/client.js 给页面。
+#
+# 设置页有两个 Tab：
+#   Aimy-艾米（预设，地址不展示、不可编辑；支持真实切分组）
+#   兼容模式（用户自填 URL + 协议，适配 new-api / sub2api 等）
+- insert:
+    - id: dsh-aimy
+      name: 'dsh-aimy'
+      config:
+        # ── Aimy 预设 ─────────────────────────────────────────────
+        # 站点根地址（不要带 /v1）；界面上不展示、用户不可改
+        baseURL: 'https://aimy.sheep1x.top'
+        # 密钥的凭据引用名；host 侧通过 ctx.credentials.resolve() 解析，不落明文
+        apiKeyRef: 'ONEHUB_API_KEY'
+        # 模型选择器里显示名
+        displayName: 'Aimy-艾米'
+        # pi-ai 路由名
+        routeName: 'onehub'
+        # 协议：openai-completions | anthropic-messages
+        api: 'openai-completions'
+
+        # ── 兼容模式 ──────────────────────────────────────────────
+        # 地址与协议由设置页写入 $DSH_HOME/dsh-aimy/profiles.json，
+        # 这里只给默认协议；密钥固定用 ONEHUB_COMPAT_API_KEY
+        compatApi: 'openai-completions'
+
+        # ── 模型能力保守默认 ───────────────────────────────────────
+        defaultContextWindow: 131072
+        defaultMaxTokens: 8192

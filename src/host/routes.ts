@@ -1,0 +1,204 @@
+/** /dsh-aimy-relay/* 的业务实现：纯函数式编排，便于脱离 Cordis 单测。 */
+import { RelayError, fetchModels, fetchTokenGroup, switchTokenGroup, type RelayOptions } from './relay';
+import type { ProviderMount } from './provider';
+import type { CatalogStore } from './state';
+import {
+  emptyState,
+  type CredentialStatus,
+  type ModelSelection,
+  type PluginState,
+  type SwitchResult,
+} from '../shared/types';
+
+export interface RouteDeps {
+  baseURL: string;
+  group: string;
+  apiKey: string;
+  store: CatalogStore;
+  /** 已挂载的模型路由（可选：未挂载时状态里 provider 为 null）*/
+  provider?: ProviderMount;
+  /** 密钥存储状态（由入口注入，routes 不直接依赖凭据服务）*/
+  credential?: CredentialStatus | null;
+  /** 当前默认模型选择（由入口从 agentDefaultModel 读取）*/
+  selection?: ModelSelection | null;
+  /** 目录变化后同步给 provider（挂载或重挂载）；失败只记录不抛 */
+  syncProvider?: (models: import('../shared/types').RelayModel[]) => Promise<{ ok: boolean; error?: string }>;
+  fetchImpl?: typeof fetch;
+}
+
+export interface RouteResult {
+  status: number;
+  body: unknown;
+}
+
+function opts(deps: RouteDeps): RelayOptions {
+  return { baseURL: deps.baseURL, apiKey: deps.apiKey, fetchImpl: deps.fetchImpl };
+}
+
+/** 把「当前选择」与目录做一致性检查：只标记，不改选，避免静默更换计费对象。 */
+function applySelection(state: PluginState, deps: RouteDeps): void {
+  state.selection = deps.selection ?? null;
+  const routeName = deps.provider?.routeName;
+  if (!deps.selection || !routeName) {
+    state.staleModel = false;
+    return;
+  }
+  if (deps.selection.provider !== routeName) {
+    // 选择指向别的路由：与本插件无关
+    state.staleModel = false;
+    return;
+  }
+  if (state.models.length === 0) {
+    state.staleModel = false;
+    return;
+  }
+  state.staleModel = !state.models.some((m) => m.id === deps.selection?.model);
+}
+
+function providerState(deps: RouteDeps, error?: string): PluginState['provider'] {
+  if (!deps.provider) return null;
+  return {
+    routeName: deps.provider.routeName,
+    mounted: deps.provider.mounted,
+    modelCount: deps.provider.modelCount,
+    error,
+  };
+}
+
+/** 读取当前状态：模型目录是必需的，分组信息是可选能力。
+ *
+ * 第三方站点（new-api / sub2api 等）没有 /v1/token/group：
+ * 这种 404 只把 supportsSwitch 置 false 并继续拉模型，绝不整体失败。
+ */
+export async function readState(deps: RouteDeps, refresh = false): Promise<PluginState> {
+  const state = emptyState(deps.baseURL);
+  state.credential = deps.credential ?? null;
+  applySelection(state, deps);
+
+  if (!deps.apiKey) {
+    state.error = '未配置 API Key：请在下方填写并保存';
+    state.provider = providerState(deps);
+    return state;
+  }
+
+  // 1) 分组信息（可选）
+  try {
+    state.token = await fetchTokenGroup(opts(deps));
+    state.supportsSwitch = true;
+  } catch (error) {
+    const missingApi = error instanceof RelayError && error.kind === 'not-found';
+    if (!missingApi) {
+      return applyError(state, error);
+    }
+    state.supportsSwitch = false;
+  }
+
+  // 2) 模型目录（必需）
+  const groupKey = state.token?.group ?? '';
+  const cached = deps.store.get(deps.baseURL, groupKey);
+  if (!refresh && cached) {
+    state.models = cached.models;
+    state.modelsFetchedAt = cached.fetchedAt;
+    state.connected = true;
+    state.provider = providerState(deps);
+    applySelection(state, deps);
+    return state;
+  }
+
+  try {
+    const models = await fetchModels(opts(deps));
+    const fetchedAt = Date.now();
+    deps.store.set({ baseURL: deps.baseURL, group: groupKey, models, fetchedAt });
+    state.models = models;
+    state.modelsFetchedAt = fetchedAt;
+    state.connected = true;
+
+    const synced = await deps.syncProvider?.(models);
+    state.provider = providerState(deps, synced && !synced.ok ? synced.error : undefined);
+    applySelection(state, deps);
+    return state;
+  } catch (error) {
+    state.connected = false;
+    state.provider = providerState(deps);
+    return applyError(state, error);
+  }
+}
+
+/** 切换分组：成功后再刷新目录；目录刷新失败不回滚分组，只给出 warning。 */
+export async function switchGroup(deps: RouteDeps, group: string): Promise<RouteResult> {
+  if (!deps.apiKey) {
+    return { status: 400, body: { success: false, message: '缺少 API Key' } };
+  }
+  if (!group) {
+    return { status: 400, body: { success: false, message: '分组不能为空' } };
+  }
+
+  let token;
+  try {
+    token = await switchTokenGroup(opts(deps), group);
+  } catch (error) {
+    const status = error instanceof RelayError ? mapStatus(error) : 500;
+    return { status, body: { success: false, message: describeError(error) } };
+  }
+
+  const state = emptyState(deps.baseURL);
+  state.token = token;
+  state.connected = true;
+  state.supportsSwitch = true;
+
+  let warning: string | undefined;
+  try {
+    const models = await fetchModels(opts(deps));
+    const fetchedAt = Date.now();
+    deps.store.set({ baseURL: deps.baseURL, group: token.group, models, fetchedAt });
+    state.models = models;
+    state.modelsFetchedAt = fetchedAt;
+
+    const synced = await deps.syncProvider?.(models);
+    if (synced && !synced.ok) {
+      warning = '分组已切换，但模型路由更新失败：' + (synced.error ?? '未知错误');
+    }
+  } catch (error) {
+    warning = '分组已切换，但模型列表刷新失败：' + describeError(error);
+    const cached = deps.store.get(deps.baseURL, token.group);
+    if (cached) {
+      state.models = cached.models;
+      state.modelsFetchedAt = cached.fetchedAt;
+    }
+  }
+
+  state.provider = providerState(deps, warning);
+  applySelection(state, deps);
+  const result: SwitchResult = { state, warning };
+  return { status: 200, body: { success: true, message: '', data: result } };
+}
+
+function applyError(state: PluginState, error: unknown): PluginState {
+  state.connected = false;
+  state.error = describeError(error);
+  return state;
+}
+
+function mapStatus(error: RelayError): number {
+  if (error.kind === 'network') return 502;
+  if (error.status >= 400 && error.status < 600) return error.status;
+  return 500;
+}
+
+export function describeError(error: unknown): string {
+  if (error instanceof RelayError) {
+    switch (error.kind) {
+      case 'auth':
+        return 'API Key 无效或已过期';
+      case 'forbidden':
+        return error.message || '该操作被中转站拒绝（请检查令牌是否开启「允许客户端切换分组」）';
+      case 'not-found':
+        return '中转站版本过低，缺少 /v1/token/group 接口';
+      case 'network':
+        return error.message;
+      default:
+        return error.message;
+    }
+  }
+  return error instanceof Error ? error.message : String(error);
+}

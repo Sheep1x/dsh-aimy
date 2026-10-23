@@ -30,6 +30,16 @@ DSH（DeepSeek Harness）插件 **dsh-Aimy**：解决中转站多分组多倍率
 
 ## 安装
 
+### 一条命令（DSH 自带 CLI）
+
+```bash
+dsh plugin --profile desktop add github:Sheep1x/dsh-aimy
+```
+
+- `--profile` **不能省**：DSH 的 `plugin` 子命令要求显式指定 profile（省略会报 `--profile <name> is required`）。
+- 这条命令把参数原样转发给 profile 目录下的 pnpm，装完仍需把 `dsh-aimy` 加进 `dsh.profile.bundles`（见下）。
+- 仓库提交了 `lib/`，安装即得可加载的包，**不需要** `allowBuilds` 构建授权。
+
 ### 方式一：npm 直接从 GitHub 安装（推荐，无需发布到 registry）
 
 ```bash
@@ -127,7 +137,28 @@ pnpm add file:D:/openwork/one-hub/dsh-aimy
 保存后插件会立刻用它探测一次中转站，成功即挂载模型路由。点「清除」会 `unset` 该引用，
 环境变量兜底重新生效。
 
-## 前置条件（中转站侧）
+## 兼容范围（重要）
+
+| 站点能力 | 支持情况 |
+|---|---|
+| `GET /v1/models`（标准 OpenAI 格式） | ✅ 必需。**绝大多数中转站都有**，new-api / sub2api / one-hub 均满足 |
+| 调用模型 | ✅ 三种协议任选（Responses / Chat Completions / Anthropic） |
+| `GET/PUT /v1/token/group`（分组切换） | ⚠️ **可选能力**。有则支持就地切组；没有则自动降级为只读 |
+
+**分组接口是可选扩展，不是所有站点都有。** new-api / sub2api 属于通用 OpenAI 兼容网关，
+该接口是各站点自行加的，多数部署并没有实现。插件对此的处理是**降级而非报错**：
+
+- 接口返回 404、返回 `200` 但 `data` 里既无 `group` 也无 `groups`、或返回 `success:false`
+  → 一律视为「该站点不支持切换分组」，`supportsSwitch` 置 `false`；
+- **模型目录与模型调用完全不受影响**，照常可用；
+- 界面不会显示一个点了没反应的「切换分组」按钮。
+
+因此：**在任何 OpenAI 兼容中转站上都能拉到模型并用**；**只有提供该接口的站点才能就地切组**。
+本站（one-hub 系）实测 `GET /v1/token/group` 正常返回 `group` / `groups` / `ratio`。
+
+## 前置条件（仅切换分组需要）
+
+以下三条只在你想用**分组切换**时才需要；只拉模型用则无需满足：
 
 1. 站点已升级到包含 `/v1/token/group` 的版本。
 2. 给 DSH 单独建一个令牌，并勾选 **允许客户端切换分组**。

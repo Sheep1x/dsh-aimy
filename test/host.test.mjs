@@ -1074,3 +1074,58 @@ describe('第三方站点兼容（new-api / sub2api 的真实响应形态）', (
     assert.deepEqual(data.models.map((m) => m.id), ['tp-model']);
   });
 });
+
+
+describe('兼容性边界（README 与投稿描述所作的承诺）', () => {
+  it('缺少分组接口的站点，三条承诺同时成立：能拉模型、能挂载、supportsSwitch=false', async () => {
+    const dshHome = mkdtempSync(join(tmpdir(), 'dsh-aimy-boundary-'));
+    const relay = makeRelay({ supportsSwitch: false }); // /v1/token/group → 404
+    await new Promise((r) => relay.server.listen(0, '127.0.0.1', r));
+    const baseURL = 'http://127.0.0.1:' + relay.server.address().port;
+    const credentials = makeFakeCredentials();
+    try {
+      const plugin = await startPlugin(baseURL, dshHome, { credentials });
+      await json(plugin.base + '/credentials?profile=compat', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ apiKey: KEY }),
+      });
+      const saved = await json(plugin.base + '/config?profile=compat', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ baseURL, api: 'openai-completions' }),
+      });
+
+      // 承诺 1：模型目录能拉到
+      assert.deepEqual(saved.body.data.models.map((m) => m.id), ['model-a', 'model-b']);
+      // 承诺 2：路由被挂载（模型能出现在选择器里）
+      assert.equal(saved.body.data.provider.mounted, true);
+      // 承诺 3：明确告知不支持切组，而不是给一个点了没反应的按钮
+      assert.equal(saved.body.data.supportsSwitch, false);
+
+      await new Promise((r) => plugin.server.close(r));
+    } finally {
+      await new Promise((r) => relay.server.close(r));
+      rmSync(dshHome, { recursive: true, force: true });
+    }
+  });
+
+  it('支持分组接口的站点，supportsSwitch=true 且能拿到分组与倍率', async () => {
+    const dshHome = mkdtempSync(join(tmpdir(), 'dsh-aimy-boundary2-'));
+    const relay = makeRelay({ supportsSwitch: true });
+    await new Promise((r) => relay.server.listen(0, '127.0.0.1', r));
+    const baseURL = 'http://127.0.0.1:' + relay.server.address().port;
+    try {
+      const plugin = await startPlugin(baseURL, dshHome);
+      const { body } = await json(plugin.base + '/state');
+      assert.equal(body.data.supportsSwitch, true);
+      assert.equal(body.data.token.group, 'default');
+      assert.equal(body.data.token.ratio, 1);
+      assert.ok(body.data.token.groups.length >= 2, '应返回可选分组');
+      await new Promise((r) => plugin.server.close(r));
+    } finally {
+      await new Promise((r) => relay.server.close(r));
+      rmSync(dshHome, { recursive: true, force: true });
+    }
+  });
+});

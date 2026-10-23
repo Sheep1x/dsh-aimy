@@ -1,6 +1,6 @@
 {
   "meta": {
     "title": "dsh-Aimy",
-    "description": "Makes a relay station's many groups and rates manageable: switch the billing group in place and the model list and rate refresh together; also supports new-api / sub2api gateways."
+    "description": "Makes a relay station's many groups and rates manageable: in-place billing-group switching where /v1/token/group exists, read-only fallback elsewhere; works with new-api / sub2api gateways."
   }
 }

@@ -32,6 +32,10 @@ export interface ProviderOptions {
 /** 一次挂载的句柄：可以在目录变化时重挂，也可以整体卸载。 */
 export interface ProviderMount {
   readonly mounted: boolean;
+  /** 路由由谁管理：本插件自挂的 fiber，还是写进了宿主已有的 pi-ai 配置 */
+  readonly managedBy: 'fiber' | 'settings';
+  /** 回读宿主 llm 注册表：路由是否真的注册上、模型数是否非零 */
+  verify(): Promise<{ present: boolean | null; listedModels: number | null; detail?: string }>;
   readonly modelCount: number;
   readonly routeName: string;
   update(models: RelayModel[]): Promise<void>;
@@ -39,6 +43,37 @@ export interface ProviderMount {
 }
 
 const DEFAULT_ADAPTER = '@deepseek-ai/dsh-llm-pi-ai';
+
+/**
+ * 从适配器模块里挑出**可以交给 ctx.plugin() 的插件**。
+ *
+ * 坑：@deepseek-ai/dsh-llm-pi-ai 导出的 `PiAiAdapter` 是**适配器实现类**
+ * （`class extends LlmAdapter`，只有 constructor 和几个方法），不是 cordis 插件。
+ * 真正的插件是模块命名空间本身：`{ name: 'llm-pi-ai', inject: ['llm'], apply(ctx, config), Config }`。
+ * 把类传给 ctx.plugin() 不会报错，但也不会注册任何 provider ——
+ * 表现就是「插件面板正常、模型选择器里一个模型都没有」。
+ *
+ * 所以这里按「有 apply 的对象 / 函数插件」优先，最后才退回同名导出（兼容别的适配器包）。
+ */
+export function pickPlugin(adapter: any, specifier = DEFAULT_ADAPTER): any {
+  if (adapter === undefined || adapter === null) {
+    throw new Error('适配器模块为空：' + specifier);
+  }
+  // 1) 模块命名空间（ESM import 的结果）或带 apply 的对象
+  if (typeof adapter.apply === 'function') return adapter;
+  // 2) 函数式插件（cordis 允许直接传函数）
+  if (typeof adapter === 'function' && !adapter.prototype) return adapter;
+  // 3) default 导出
+  const fallback = adapter.default;
+  if (fallback && typeof fallback.apply === 'function') return fallback;
+  if (typeof fallback === 'function' && !fallback.prototype) return fallback;
+  throw new Error(
+    '适配器模块没有导出可挂载的 cordis 插件（需要 name/inject/apply）：' +
+      specifier +
+      '，实际导出：' +
+      Object.keys(adapter).join(', '),
+  );
+}
 
 /**
  * 按协议归整 baseURL —— 两种 SDK 的路径拼接口径不同：
@@ -102,23 +137,79 @@ export async function createProviderMount(
 ): Promise<ProviderMount> {
   const specifier = opts.adapterModule ?? DEFAULT_ADAPTER;
   const adapter = await loadAdapter(specifier);
-  const plugin = adapter?.PiAiAdapter ?? adapter?.default ?? adapter;
-  if (!plugin) {
-    throw new Error('适配器模块没有导出可挂载的插件：' + specifier);
-  }
+  const plugin = pickPlugin(adapter, specifier);
 
   let fiber: any;
   let models = opts.models;
+
+  /** 最近一次挂载后的自检结果：注册表里到底有没有这条路由。 */
+  let verification: { present: boolean | null; listedModels: number | null; detail?: string } | null = null;
 
   const mountWith = (next: RelayModel[]) => {
     const config = { providers: { [opts.routeName]: buildProfile({ ...opts, models: next }) } };
     fiber = ctx.plugin(plugin, config);
     models = next;
+    verification = null;
+  };
+
+  /**
+   * 挂载后自检：直接问宿主的 llm 注册表。
+   *
+   * 只信 ctx.plugin() 的返回值是不够的 —— fiber 存在不代表注册成功（inject 未满足时
+   * 会停在 pending，pi-ai 的 listModels 解析不到凭据时又会返回空数组）。
+   * 这两种情况都会让模型选择器里什么都不显示，所以必须回读注册表确认。
+   */
+  const verify = async (): Promise<{ present: boolean | null; listedModels: number | null; detail?: string }> => {
+    if (verification) return verification;
+    try {
+      const llm = typeof ctx?.get === 'function' ? ctx.get('llm', false) : undefined;
+      if (!llm || typeof llm.listProviders !== 'function') {
+        // 无法自检（例如测试替身里没有 llm）：不当成失败，避免误报
+        verification = { present: null, listedModels: null, detail: 'llm 服务不可用（无法自检）' };
+        return verification;
+      }
+      const fiberState = fiber && typeof fiber.state === 'number' ? fiber.state : undefined;
+      if (fiberState !== undefined && fiberState !== 2) {
+        verification = {
+          present: false,
+          listedModels: null,
+          detail:
+            'pi-ai 子插件未激活（fiber.state=' + fiberState + '）。' +
+            '常见原因：profile 里已有 @deepseek-ai/dsh-llm-pi-ai 条目，同一个 pi-ai 不能挂两次' +
+            '（内置 provider 目录会重复注册而整体失败）',
+        };
+        return verification;
+      }
+      const present = llm.listProviders().some((p: any) => p?.id === opts.routeName);
+      let listedModels: number | null = null;
+      if (present && typeof llm.listModels === 'function') {
+        try {
+          const listed = await llm.listModels(opts.routeName);
+          listedModels = Array.isArray(listed) ? listed.length : 0;
+        } catch (error) {
+          verification = { present, listedModels: null, detail: 'listModels 抛错：' + (error instanceof Error ? error.message : String(error)) };
+          return verification;
+        }
+      }
+      verification = {
+        present,
+        listedModels,
+        ...(present && listedModels === 0
+          ? { detail: '路由已注册但模型为空（通常是 apiKeyEnv 解析不到凭据）' }
+          : {}),
+        ...(!present ? { detail: 'ctx.plugin 未把路由注册进 llm（fiber 可能停在 pending）' } : {}),
+      };
+      return verification;
+    } catch (error) {
+      verification = { present: false, listedModels: null, detail: '自检抛错：' + (error instanceof Error ? error.message : String(error)) };
+      return verification;
+    }
   };
 
   mountWith(opts.models);
 
   return {
+    managedBy: 'fiber' as const,
     get mounted() {
       return Boolean(fiber);
     },
@@ -126,6 +217,7 @@ export async function createProviderMount(
       return models.length;
     },
     routeName: opts.routeName,
+    verify,
     async update(next: RelayModel[]) {
       if (sameModels(models, next)) return;
       if (fiber && typeof fiber.dispose === 'function') {

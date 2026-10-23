@@ -12,7 +12,7 @@
  */
 import type { IncomingMessage, ServerResponse } from 'node:http';
 
-import { createProviderMount, type ProviderMount } from './provider';
+import { createProviderMount, normalizeBaseURLForApi, type ProviderMount } from './provider';
 import {
   AIMY_DEFAULT_BASE_URL,
   AIMY_DEFAULT_DISPLAY_NAME,
@@ -26,9 +26,13 @@ import {
   type ProfileId,
   type RelayApi,
 } from './profiles';
+import { writeProviderViaSettings, removeProviderViaSettings } from './registry';
 import { CatalogStore } from './state';
 import { describeError, readState, switchGroup, type RouteDeps } from './routes';
 import type { RelayModel } from '../shared/types';
+
+// 供测试与调试：从适配器模块里挑出可挂载的 cordis 插件
+export { pickPlugin } from './provider';
 
 const ROUTE_PREFIX = '/dsh-aimy-relay';
 
@@ -53,16 +57,27 @@ export interface Config {
   providerAdapter?: string;
   /** 仅调试用：直接内联密钥（不落盘、不推荐）*/
   apiKey?: string;
+  /**
+   * 现有 @deepseek-ai/dsh-llm-pi-ai 条目的 id。
+   * 有这条时把 provider 写进它的配置（推荐），而不是自己再挂一个 pi-ai 实例。
+   */
+  settingsNs?: string;
 }
 
 const DEFAULT_KEY_REF = 'ONEHUB_API_KEY';
+/** DSH profile 里官方 pi-ai 条目的默认 id（cordis.patch.yml 里的 - id: llm-pi-ai）。 */
+const DEFAULT_SETTINGS_NS = 'llm-pi-ai';
 const DEFAULT_ROUTE = 'onehub';
 const DEFAULT_CONTEXT_WINDOW = 131072;
 const DEFAULT_MAX_TOKENS = 8192;
 
-function readConfig(ctx: any, config?: Config): Config {
-  const fromCtx = typeof ctx?.config === 'object' && ctx.config !== null ? (ctx.config as Config) : {};
-  return { ...fromCtx, ...(config ?? {}) };
+/**
+ * 插件配置来自 cordis 传给 apply() 的第二个参数。
+ * 不能读 ctx.config：cordis 的 context 代理对未 inject 的属性直接抛
+ * 「cannot get property config without inject」，会把每条路由都打成 500。
+ */
+function readConfig(config?: Config): Config {
+  return { ...(config ?? {}) };
 }
 
 /* ------------------------------ 凭据 / 选择 ------------------------------ */
@@ -137,6 +152,101 @@ async function unsetCredential(ctx: any, ref: string): Promise<void> {
   await credentials.unset(ref);
 }
 
+/**
+ * 诊断：直接问宿主自己的 llm 注册表与 credentials，回答「模型为什么没出现在选择器里」。
+ *
+ * 结论对应关系（都实测过）：
+ *   - registryPresent=false  → registerAdapter 没生效（挂载失败 / 挂到了别的 fiber）
+ *   - registryModels=0       → pi-ai 的 listModels 返回空：绝大多数是解析不到 API Key
+ *                             （پی-ai 的 listModels 捕获 MISSING_CREDENTIAL 后直接 return []）
+ *   - registryModels>0 但面板没显示 → 是浏览器侧目录缓存没刷新，与本插件无关
+ */
+async function readDiagnostics(ctx: any, routeName: string, apiKeyRef: string, settingsNs?: string) {
+  const report: Record<string, unknown> = { routeName, apiKeyRef, ...(settingsNs ? { settingsNs } : {}) };
+  try {
+    const llm = typeof ctx?.get === 'function' ? ctx.get('llm', false) : undefined;
+    if (!llm) {
+      report.llmService = 'unavailable';
+      return report;
+    }
+    report.llmService = 'ok';
+    const providers = typeof llm.listProviders === 'function' ? llm.listProviders() : [];
+    report.providers = providers.map((p: any) => p.id);
+    report.registryPresent = providers.some((p: any) => p.id === routeName);
+    if (typeof llm.listModels === 'function' && report.registryPresent) {
+      try {
+        const models = await llm.listModels(routeName);
+        report.registryModels = models.length;
+      } catch (error) {
+        report.registryModels = 'threw: ' + describeError(error);
+      }
+    }
+  } catch (error) {
+    report.llmService = 'threw: ' + describeError(error);
+  }
+  try {
+    const settings = typeof ctx?.get === 'function' ? ctx.get('settings', false) : undefined;
+    if (!settings || typeof settings.update !== 'function') {
+      report.settingsChannel = 'unavailable';
+    } else {
+      let found = false;
+      try {
+        const rows = settings.describe({ redactSecrets: true });
+        found = Array.isArray(rows) && rows.some((row: any) => row?.ns === (report.settingsNs ?? 'llm-pi-ai'));
+      } catch (error) {
+        report.settingsChannel = 'describe threw: ' + describeError(error);
+      }
+      report.settingsChannel ??= found ? 'ok' : 'entry missing';
+      report.settingsNs ??= 'llm-pi-ai';
+    }
+  } catch (error) {
+    report.settingsChannel = 'threw: ' + describeError(error);
+  }
+  try {
+    const credentials = typeof ctx?.get === 'function' ? ctx.get('credentials', false) : undefined;
+    if (!credentials || typeof credentials.resolve !== 'function') {
+      report.credentialResolve = 'unavailable';
+    } else {
+      const hit = await credentials.resolve(apiKeyRef);
+      report.credentialResolve = hit && hit.value ? 'resolved(' + (hit.source ?? '?') + ')' : 'missing';
+    }
+  } catch (error) {
+    report.credentialResolve = 'threw: ' + describeError(error);
+  }
+  return report;
+}
+
+/**
+ * 回读 llm 注册表：某条路由是否真的注册上、模型是否非空。
+ * `present === null` 表示无法自检（没有 llm 服务），不等同失败。
+ */
+async function verifyRoute(ctx: any, routeName: string): Promise<{ present: boolean | null; listedModels: number | null; detail?: string }> {
+  try {
+    const llm = typeof ctx?.get === 'function' ? ctx.get('llm', false) : undefined;
+    if (!llm || typeof llm.listProviders !== 'function') {
+      return { present: null, listedModels: null, detail: 'llm 服务不可用（无法自检）' };
+    }
+    const present = llm.listProviders().some((p: any) => p?.id === routeName);
+    if (!present) {
+      return { present: false, listedModels: null, detail: 'ctx.plugin 未把路由注册进 llm（fiber 可能停在 pending）' };
+    }
+    let listedModels: number | null = null;
+    if (typeof llm.listModels === 'function') {
+      try {
+        const listed = await llm.listModels(routeName);
+        listedModels = Array.isArray(listed) ? listed.length : 0;
+      } catch (error) {
+        return { present: true, listedModels: null, detail: 'listModels 抛错：' + describeError(error) };
+      }
+    }
+    return listedModels === 0
+      ? { present: true, listedModels, detail: '路由已注册但模型为空（通常是 apiKeyEnv 解析不到凭据）' }
+      : { present: true, listedModels };
+  } catch (error) {
+    return { present: null, listedModels: null, detail: '自检抛错：' + describeError(error) };
+  }
+}
+
 /** 读当前默认模型选择；服务缺失或抛错时返回 null。 */
 function readSelection(ctx: any): { provider: string; model: string } | null {
   try {
@@ -191,10 +301,30 @@ export function apply(ctx: any, config?: Config): void {
   settings.load();
 
   const mounts = new Map<ProfileId, ProviderMount>();
+  /** 通过 settings 写进宿主 pi-ai 的路由（本插件不持有 fiber）。 */
+  const settingsRoutes = new Map<ProfileId, { routeName: string; modelCount: number }>();
+
+  /**
+   * settings 路由没有 fiber 句柄，但 routes 只需要 routeName / mounted / modelCount。
+   * 让 state.provider 与 staleModel 判断在两条路径下行为一致。
+   */
+  const settingsMountShim = (profileId: ProfileId): ProviderMount | undefined => {
+    const entry = settingsRoutes.get(profileId);
+    if (!entry) return undefined;
+    return {
+      routeName: entry.routeName,
+      mounted: true,
+      modelCount: entry.modelCount,
+      managedBy: 'settings',
+      verify: async () => ({ present: null, listedModels: null }),
+      update: async () => {},
+      dispose: async () => {},
+    };
+  };
   const mountErrors = new Map<ProfileId, string>();
 
   const resolve = (id: ProfileId): ProfileConfig => {
-    const cfg = readConfig(ctx, config);
+    const cfg = readConfig(config);
     return resolveProfile({
       id,
       settings,
@@ -218,7 +348,34 @@ export function apply(ctx: any, config?: Config): void {
     if (models.length === 0) {
       return { ok: false, error: '当前分组没有可用模型，未挂载模型路由' };
     }
-    const cfg = readConfig(ctx, config);
+    const cfg = readConfig(config);
+
+    // 首选：写进现有 pi-ai 条目的配置（避免重复注册内置 provider 目录）
+    const viaSettings = await writeProviderViaSettings(ctx, {
+      settingsNs: cfg.settingsNs ?? DEFAULT_SETTINGS_NS,
+      routeName: profile.routeName,
+      displayName: profile.displayName,
+      // 与 buildProfile 同一套归整：openai 补 /v1，anthropic 去掉 /v1
+      baseURL: normalizeBaseURLForApi(profile.baseURL, profile.api),
+      apiKeyRef: profile.apiKeyRef,
+      api: profile.api,
+      models,
+      defaultContextWindow: profile.defaultContextWindow,
+      defaultMaxTokens: profile.defaultMaxTokens,
+    });
+    if (viaSettings && viaSettings.kind === 'settings') {
+      // 交给宿主那个 pi-ai 实例自己注册路由；本插件不再持有 fiber
+      const check = await verifyRoute(ctx, profile.routeName);
+      settingsRoutes.set(profile.id, { routeName: profile.routeName, modelCount: models.length });
+      if (check.present === false) {
+        const message = '已写入 ' + viaSettings.ns + ' 的 providers，但模型路由仍未出现在 llm 中';
+        mountErrors.set(profile.id, message);
+        return { ok: false, error: message };
+      }
+      mountErrors.delete(profile.id);
+      return { ok: true };
+    }
+
     try {
       const existing = mounts.get(profile.id);
       if (!existing) {
@@ -237,6 +394,21 @@ export function apply(ctx: any, config?: Config): void {
       } else {
         await existing.update(models);
       }
+
+      // 挂载后回读注册表：fiber 存在 ≠ 模型可见
+      const mounted = mounts.get(profile.id)!;
+      const check = await mounted.verify();
+      if (check.present === false) {
+        const message = '模型路由没有注册进 llm：' + (check.detail ?? '未知原因');
+        mountErrors.set(profile.id, message);
+        return { ok: false, error: message };
+      }
+      if (check.present === true && check.listedModels === 0) {
+        const message = '路由已注册但模型为空：' + (check.detail ?? '未知原因');
+        mountErrors.set(profile.id, message);
+        return { ok: false, error: message };
+      }
+
       mountErrors.delete(profile.id);
       return { ok: true };
     } catch (error) {
@@ -247,14 +419,15 @@ export function apply(ctx: any, config?: Config): void {
   };
 
   const buildDeps = async (profile: ProfileConfig): Promise<RouteDeps> => {
-    const cfg = readConfig(ctx, config);
+    const cfg = readConfig(config);
     const inline = profile.preset ? cfg.apiKey : undefined;
     return {
       baseURL: profile.baseURL,
+      routeName: profile.routeName,
       group: '',
       apiKey: await resolveApiKey(ctx, profile.apiKeyRef, inline),
       store: catalogs,
-      provider: mounts.get(profile.id),
+      provider: mounts.get(profile.id) ?? settingsMountShim(profile.id),
       syncProvider: (models) => syncProvider(profile, models),
       credential: await describeCredential(ctx, profile.apiKeyRef),
       selection: readSelection(ctx),
@@ -273,19 +446,29 @@ export function apply(ctx: any, config?: Config): void {
     return readState(deps, refresh);
   };
 
-  /** 给状态补上档案身份；预设档案不暴露地址。 */
+  /** 给状态补上档案身份；预设档案的地址只读展示（不再隐藏）。 */
   const decorate = <T extends Record<string, any>>(state: T, profile: ProfileConfig): T => {
     state.profile = profile.id;
     state.displayName = profile.displayName;
     state.preset = profile.preset;
     state.api = profile.api;
     state.configured = Boolean(profile.baseURL);
-    if (profile.preset) state.baseURL = '';
     return state;
   };
 
   /** 用最新挂载句柄回填状态（deps 里的 provider 是构建时快照）。 */
   const withProvider = <T extends Record<string, any>>(state: T, profile: ProfileConfig): T => {
+    const viaSettings = settingsRoutes.get(profile.id);
+    if (viaSettings) {
+      state.provider = {
+        routeName: viaSettings.routeName,
+        mounted: true,
+        modelCount: viaSettings.modelCount,
+        managedBy: 'settings',
+        ...(mountErrors.has(profile.id) ? { error: mountErrors.get(profile.id) } : {}),
+      };
+      return state;
+    }
     const mount = mounts.get(profile.id);
     if (mount) {
       state.provider = {
@@ -297,6 +480,28 @@ export function apply(ctx: any, config?: Config): void {
     }
     return state;
   };
+
+  /**
+   * 启动预热：用磁盘缓存里的模型目录先把路由挂上。
+   *
+   * 不预热的话，模型只有在用户点开「中转站」面板、/state 跑过一次之后才挂载，
+   * DSH 的模型选择器在此之前就是一个空列表。缓存里没有目录（首次安装）时才留空，
+   * 等面板首次刷新拿到目录后再挂。
+   */
+  const warmStart = async (): Promise<void> => {
+    for (const id of ['aimy', 'compat'] as ProfileId[]) {
+      try {
+        const profile = resolve(id);
+        if (!profile.baseURL) continue;
+        const cached = catalogs.latest(profile.baseURL);
+        if (!cached || cached.models.length === 0) continue;
+        await syncProvider(profile, cached.models);
+      } catch {
+        // 预热失败不影响插件其余部分，面板里会显示原因
+      }
+    }
+  };
+  void warmStart();
 
   ctx.effect(() => () => {
     for (const mount of mounts.values()) void mount.dispose();
@@ -338,6 +543,7 @@ export function apply(ctx: any, config?: Config): void {
 
             if (method === 'GET' && route === '/state') {
               const state = withProvider(decorate(await readState(deps), profile), profile);
+              (state as any).diagnostics = await readDiagnostics(ctx, profile.routeName, profile.apiKeyRef, readConfig(config).settingsNs ?? DEFAULT_SETTINGS_NS);
               sendJson(res, 200, { success: true, data: state });
               return;
             }
@@ -405,6 +611,12 @@ export function apply(ctx: any, config?: Config): void {
                 await mount.dispose();
                 mounts.delete(profileId);
               }
+              // 写进 pi-ai 配置的那条也要摘掉，否则模型会残留在选择器里
+              const cfgNow = readConfig(config);
+              await removeProviderViaSettings(ctx, {
+                settingsNs: cfgNow.settingsNs ?? DEFAULT_SETTINGS_NS,
+                routeName: 'onehub-compat',
+              });
               settings.clearCompat();
               const cleared = resolve(profileId);
               const state = withProvider(

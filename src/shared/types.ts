@@ -34,6 +34,18 @@ export interface ProviderState {
   mounted: boolean;
   modelCount: number;
   error?: string;
+  /** /state 附带的自检结果（仅 host 侧填充，供面板排障）*/
+  diagnostics?: {
+    routeName: string;
+    apiKeyRef: string;
+    llmService?: string;
+    providers?: string[];
+    registryPresent?: boolean;
+    registryModels?: number | string;
+    credentialResolve?: string;
+    settingsChannel?: string;
+    settingsNs?: string;
+  };
 }
 
 /** 当前默认模型选择（来自 agentDefaultModel 服务）。 */
@@ -48,9 +60,9 @@ export type ProfileId = 'aimy' | 'compat';
 export interface PluginState {
   profile: ProfileId;
   displayName: string;
-  /** 预设档案不返回地址（界面也不展示）*/
+  /** 档案的地址；预设档案返回内置默认地址（界面只读展示）*/
   baseURL: string;
-  /** true 表示该档案是内置预设，地址不可编辑、不展示 */
+  /** true 表示该档案是内置预设，地址只读（不可编辑）*/
   preset: boolean;
   api: 'openai-completions' | 'anthropic-messages';
   /** 兼容模式是否已填地址 */

@@ -12,6 +12,8 @@ import {
 
 export interface RouteDeps {
   baseURL: string;
+  /** 本档案的 pi-ai 路由名（挂载失败时用来说明是哪条路由）*/
+  routeName?: string;
   group: string;
   apiKey: string;
   store: CatalogStore;
@@ -55,8 +57,17 @@ function applySelection(state: PluginState, deps: RouteDeps): void {
   state.staleModel = !state.models.some((m) => m.id === deps.selection?.model);
 }
 
-function providerState(deps: RouteDeps, error?: string): PluginState['provider'] {
-  if (!deps.provider) return null;
+function providerState(
+  deps: RouteDeps,
+  error?: string,
+  fallbackRoute?: string,
+): PluginState['provider'] {
+  if (!deps.provider) {
+    // 还没有挂载句柄，但同步已经明确失败：也要把错误暴露出去，
+    // 否则「挂载失败」在界面上会显示成「未挂载」，看不出原因。
+    if (!error) return null;
+    return { routeName: fallbackRoute ?? '', mounted: false, modelCount: 0, error };
+  }
   return {
     routeName: deps.provider.routeName,
     mounted: deps.provider.mounted,
@@ -100,7 +111,10 @@ export async function readState(deps: RouteDeps, refresh = false): Promise<Plugi
     state.models = cached.models;
     state.modelsFetchedAt = cached.fetchedAt;
     state.connected = true;
-    state.provider = providerState(deps);
+    // 缓存命中也要同步 provider：进程刚起来 / 面板没开过时，模型路由还没挂，
+    // 只有挂上去模型才会出现在 DSH 的模型选择器里。
+    const synced = await deps.syncProvider?.(cached.models);
+    state.provider = providerState(deps, synced && !synced.ok ? synced.error : undefined, deps.routeName);
     applySelection(state, deps);
     return state;
   }
@@ -114,7 +128,7 @@ export async function readState(deps: RouteDeps, refresh = false): Promise<Plugi
     state.connected = true;
 
     const synced = await deps.syncProvider?.(models);
-    state.provider = providerState(deps, synced && !synced.ok ? synced.error : undefined);
+    state.provider = providerState(deps, synced && !synced.ok ? synced.error : undefined, deps.routeName);
     applySelection(state, deps);
     return state;
   } catch (error) {

@@ -2,7 +2,7 @@
 import { after, before, describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -102,13 +102,19 @@ function makeFakeCredentials() {
   };
 }
 
-/** 最小的 cordis ctx 替身：effect / get / plugin / webServer。 */
-function makeCtx(config, options = {}) {
+/**
+ * 最小的 cordis ctx 替身：effect / get / plugin / webServer。
+ *
+ * 故意做成严格代理：cordis 的 context 代理对「既不在上下文里、也没 inject」
+ * 的属性直接抛 cannot get property "x" without inject。替身必须同样抛错，
+ * 否则 ctx.config 这类越界读取会静默通过测试、上线才 500（已踩过一次）。
+ */
+function makeCtx(options = {}) {
   const disposers = [];
   const childDisposers = [];
   let registered = null;
-  const ctx = {
-    config,
+
+  const base = {
     effect(fn) {
       const dispose = fn();
       if (typeof dispose === 'function') disposers.push(dispose);
@@ -117,21 +123,37 @@ function makeCtx(config, options = {}) {
     get(name, fallback) {
       if (name === 'credentials') return options.credentials ?? fallback;
       if (name === 'agentDefaultModel') return options.agentDefaultModel ?? fallback;
+      if (name === 'llm') return options.llm ?? fallback;
+      if (name === 'settings') return options.settings ?? fallback;
       return fallback;
     },
     plugin(plugin, pluginConfig) {
-      const childCtx = { ...ctx, config: pluginConfig };
-      const dispose = plugin.apply?.(childCtx, pluginConfig);
+      // 和 cordis 一致：配置走 apply 的第二个参数，不改写 ctx
+      const dispose = plugin.apply?.(ctx, pluginConfig);
       if (typeof dispose === 'function') childDisposers.push(dispose);
       return { dispose: async () => { if (typeof dispose === 'function') await dispose(); } };
     },
     webServer: {
-      register(options) {
-        registered = options;
+      register(request) {
+        registered = request;
         return () => {};
       },
     },
   };
+
+  const ctx = new Proxy(base, {
+    get(target, prop) {
+      if (typeof prop === 'symbol') return Reflect.get(target, prop);
+      const name = String(prop);
+      // cordis 的 isSpecialProperty：then / 下划线 / 数字索引 一律放行
+      if (name === 'then' || name.startsWith('_') || parseInt(name, 10).toString() === name) {
+        return Reflect.get(target, prop);
+      }
+      if (Reflect.has(target, prop)) return Reflect.get(target, prop);
+      throw new Error('cannot get property "' + name + '" without inject');
+    },
+  });
+
   return {
     ctx,
     getRegistered: () => registered,
@@ -148,16 +170,19 @@ async function startPlugin(baseURL, dshHome, options = {}) {
   const plugin = await import('../lib/index.js');
 
   const adapterUrl = new URL('./fake-adapter.mjs', import.meta.url).href;
-  const { ctx, getRegistered } = makeCtx(
-    {
-      baseURL,
-      apiKeyRef: 'ONEHUB_API_KEY',
-      providerAdapter: adapterUrl,
-    },
-    { credentials: options.credentials, agentDefaultModel: options.agentDefaultModel },
-  );
+  const { ctx, getRegistered } = makeCtx({
+    credentials: options.credentials,
+    agentDefaultModel: options.agentDefaultModel,
+    llm: options.llm,
+    settings: options.settings,
+  });
 
-  plugin.apply(ctx, ctx.config);
+  // 和 cordis 一致：配置作为 apply 的第二个参数传入
+  plugin.apply(ctx, {
+    baseURL,
+    apiKeyRef: 'ONEHUB_API_KEY',
+    providerAdapter: adapterUrl,
+  });
   const registered = getRegistered();
   assert.ok(registered, 'webServer.register 未被调用');
 
@@ -222,12 +247,12 @@ describe('dsh-aimy host routes', () => {
     assert.deepEqual(relay.state.log, [{ from: 'default', to: 'vip' }]);
   });
 
-  it('Aimy 预设：preset=true 且不返回地址', async () => {
+  it('Aimy 预设：preset=true，地址只读展示', async () => {
     const { body } = await json(plugin.base + '/state');
     assert.equal(body.data.profile, 'aimy');
     assert.equal(body.data.preset, true);
     assert.equal(body.data.displayName, 'Aimy-艾米');
-    assert.equal(body.data.baseURL, '', '预设档案不应把地址暴露给前端');
+    assert.match(body.data.baseURL, /^http:\/\/127\.0\.0\.1:\d+/u, '预设档案的地址应只读展示给前端');
     assert.equal(body.data.api, 'openai-completions');
   });
 
@@ -605,5 +630,195 @@ describe('baseURL 归整（OpenAI 补 /v1，Anthropic 不带 /v1）', () => {
   it('Anthropic 协议：域名原样保留', async () => {
     const profile = await profileFor(relayBase, 'anthropic-messages');
     assert.equal(profile.baseURL, relayBase);
+  });
+});
+
+
+describe('适配器插件形状', () => {
+  it('pickPlugin 挑模块命名空间（apply），而不是 PiAiAdapter 类', async () => {
+    const { pickPlugin } = await import('../lib/index.js');
+    const adapter = await import('./fake-adapter.mjs');
+
+    const picked = pickPlugin(adapter, 'fake');
+    assert.equal(typeof picked.apply, 'function', '应挑出带 apply 的插件');
+    assert.equal(picked.name, 'llm-pi-ai');
+    assert.notEqual(picked, adapter.PiAiAdapter, 'PiAiAdapter 是类，不是插件');
+
+    // 只有类、没有 apply 的模块必须报错，而不是静默挂空
+    assert.throws(
+      () => pickPlugin({ PiAiAdapter: adapter.PiAiAdapter }, 'only-class'),
+      /没有导出可挂载的 cordis 插件/u,
+    );
+  });
+});
+
+describe('启动预热（不点面板也要有模型）', () => {
+  let relay;
+  let plugin;
+  let dshHome;
+
+  before(async () => {
+    dshHome = mkdtempSync(join(tmpdir(), 'dsh-aimy-warm-'));
+    relay = makeRelay({ supportsSwitch: true });
+    await new Promise((resolve) => relay.server.listen(0, '127.0.0.1', resolve));
+    const { port } = relay.server.address();
+    const baseURL = 'http://127.0.0.1:' + port;
+
+    // 预置磁盘目录缓存：模拟「上次运行拉过模型目录」
+    mkdirSync(join(dshHome, 'dsh-aimy'), { recursive: true });
+    writeFileSync(join(dshHome, 'dsh-aimy', 'state.json'), JSON.stringify({
+      version: 1,
+      catalogs: [{ baseURL, group: 'vip', models: [{ id: 'cached-a' }, { id: 'cached-b' }], fetchedAt: 1 }],
+    }));
+
+    plugin = await startPlugin(baseURL, dshHome);
+  });
+
+  after(async () => {
+    await new Promise((resolve) => plugin.server.close(resolve));
+    await new Promise((resolve) => relay.server.close(resolve));
+    rmSync(dshHome, { recursive: true, force: true });
+  });
+
+  it('apply() 之后无需任何 HTTP 请求就挂载了模型路由', async () => {
+    const adapter = await import('./fake-adapter.mjs');
+    // warmStart 是异步的，等它跑完
+    for (let i = 0; i < 20; i += 1) {
+      if (adapter.mounts.some((m) => m && m.onehub)) break;
+      await new Promise((resolve) => setTimeout(resolve, 25));
+    }
+    const mount = adapter.mounts.filter((m) => m && m.onehub).pop();
+    assert.ok(mount, '启动时没有用缓存目录挂载模型路由（模型选择器会是空的）');
+    assert.deepEqual(mount.onehub.models.map((m) => m.id), ['cached-a', 'cached-b']);
+  });
+});
+
+
+describe('挂载后自检', () => {
+  it('fiber 建了但注册表里没有路由 → verify() 判失败并写进 provider.error', async () => {
+    const dshHome = mkdtempSync(join(tmpdir(), 'dsh-aimy-verify-'));
+    try {
+      const baseURL = 'https://verify.example.com';
+      // 预置缓存，让 warmStart 直接走挂载路径
+      mkdirSync(join(dshHome, 'dsh-aimy'), { recursive: true });
+      writeFileSync(join(dshHome, 'dsh-aimy', 'state.json'), JSON.stringify({
+        version: 1,
+        catalogs: [{ baseURL, group: '', models: [{ id: 'm1' }], fetchedAt: 1 }],
+      }));
+
+      // llm 注册表永远为空（模拟 fiber 停在 pending / 注册被拒）
+      const emptyLlm = {
+        listProviders: () => [],
+        listModels: async () => [],
+      };
+
+      const plugin = await startPlugin(baseURL, dshHome, { llm: emptyLlm });
+      const { body } = await json(plugin.base + '/state');
+      await new Promise((r) => plugin.server.close(r));
+
+      assert.equal(body.data.provider.mounted, true, 'fiber 仍然存在');
+      assert.ok(body.data.provider.error, '必须报错，不能静默通过');
+      assert.match(body.data.provider.error, /没有注册进 llm/u);
+    } finally {
+      rmSync(dshHome, { recursive: true, force: true });
+    }
+  });
+});
+
+
+describe('自检不误报', () => {
+  it('测试替身没有 llm 服务时不报错（只是无法自检）', async () => {
+    const dshHome = mkdtempSync(join(tmpdir(), 'dsh-aimy-noverify-'));
+    try {
+      const relay = makeRelay({ supportsSwitch: true });
+      await new Promise((r) => relay.server.listen(0, '127.0.0.1', r));
+      const { port } = relay.server.address();
+      const plugin = await startPlugin('http://127.0.0.1:' + port, dshHome);
+      const { body } = await json(plugin.base + '/state');
+      await new Promise((r) => plugin.server.close(r));
+      await new Promise((r) => relay.server.close(r));
+
+      assert.equal(body.data.provider.mounted, true);
+      assert.equal(body.data.provider.error, undefined, '没有 llm 服务时不应误判为注册失败');
+    } finally {
+      rmSync(dshHome, { recursive: true, force: true });
+    }
+  });
+});
+
+
+describe('写进现有 pi-ai 配置（首选路径）', () => {
+  /** 假 settings 服务：记录 update/mutate 调用，模拟 pi-ai 条目的 volatile 通道。 */
+  function makeSettings({ ns = 'llm-pi-ai', holders = ['aimy', 'aimy-gpt'] } = {}) {
+    const written = [];
+    const removed = [];
+    let current = Object.fromEntries(holders.map((h) => [h, { displayName: h }]));
+    return {
+      written, removed,
+      get current() { return current; },
+      describe() { return [{ ns, revision: 1 }]; },
+      async update(target, patch) {
+        written.push({ ns: target, patch });
+        current = { ...current, ...(patch.providers ?? {}) };
+      },
+      async mutate(target, ops) {
+        for (const op of ops) {
+          removed.push({ ns: target, path: op.path });
+          if (op.op === 'unset' && op.path[0] === 'providers') delete current[op.path[1]];
+        }
+      },
+    };
+  }
+
+  it('provider 被写进 llm-pi-ai 的 providers，且不动别人的路由', async () => {
+    const dshHome = mkdtempSync(join(tmpdir(), 'dsh-aimy-settings-'));
+    const relay = makeRelay({ supportsSwitch: true });
+    await new Promise((r) => relay.server.listen(0, '127.0.0.1', r));
+    const { port } = relay.server.address();
+    const baseURL = 'http://127.0.0.1:' + port;
+
+    const settings = makeSettings();
+    const llm = { listProviders: () => [{ id: 'onehub' }], listModels: async () => [{ id: 'model-a' }] };
+    try {
+      const plugin = await startPlugin(baseURL, dshHome, { settings, llm });
+      const { body } = await json(plugin.base + '/refresh', { method: 'POST' });
+      await new Promise((r) => plugin.server.close(r));
+
+      assert.equal(body.data.provider.mounted !== undefined, true);
+      assert.equal(settings.written.length > 0, true, '应当写入 settings，而不是自己挂第二个实例');
+
+      const write = settings.written.find((w) => w.patch?.providers?.onehub);
+      assert.ok(write, '没有写入 providers.onehub');
+      assert.equal(write.ns, 'llm-pi-ai');
+      const profile = write.patch.providers.onehub;
+      assert.equal(profile.apiKeyEnv, 'ONEHUB_API_KEY');
+      assert.match(profile.baseURL, /\/v1$/u, 'OpenAI 协议应补 /v1');
+      assert.deepEqual(profile.models.map((m) => m.id), ['model-a', 'model-b']);
+
+      // 别人的路由必须还在
+      assert.deepEqual(Object.keys(settings.current).sort(), ['aimy', 'aimy-gpt', 'onehub']);
+    } finally {
+      await new Promise((r) => relay.server.close(r));
+      rmSync(dshHome, { recursive: true, force: true });
+    }
+  });
+
+  it('清除兼容模式会从 settings 里摘掉 onehub-compat', async () => {
+    const dshHome = mkdtempSync(join(tmpdir(), 'dsh-aimy-unset-'));
+    const settings = makeSettings();
+    const llm = { listProviders: () => [], listModels: async () => [] };
+    try {
+      const plugin = await startPlugin('http://127.0.0.1:1', dshHome, { settings, llm });
+      const { body } = await json(plugin.base + '/config?profile=compat', { method: 'DELETE' });
+      await new Promise((r) => plugin.server.close(r));
+
+      assert.equal(body.success, true);
+      assert.ok(
+        settings.removed.some((r) => r.path.join('.') === 'providers.onehub-compat'),
+        '清除兼容模式时应摘掉 settings 里的 provider',
+      );
+    } finally {
+      rmSync(dshHome, { recursive: true, force: true });
+    }
   });
 });

@@ -49,6 +49,22 @@ export class CatalogStore {
     return this.data.catalogs.find((c) => c.baseURL === baseURL && c.group === group);
   }
 
+  /**
+   * 该站点最近一次的目录（不区分分组）。
+   *
+   * 冷启动时还不知道当前分组（分组要打网络才知道），但模型路由需要在启动时就挂上，
+   * 否则模型选择器在整个「用户点开面板之前」都是空的。用最近的目录做预热即可，
+   * 面板刷新后会用真实分组目录重挂。
+   */
+  latest(baseURL: string): CachedCatalog | undefined {
+    let newest: CachedCatalog | undefined;
+    for (const catalog of this.data.catalogs) {
+      if (catalog.baseURL !== baseURL) continue;
+      if (!newest || catalog.fetchedAt > newest.fetchedAt) newest = catalog;
+    }
+    return newest;
+  }
+
   set(catalog: CachedCatalog): void {
     this.data.catalogs = this.data.catalogs.filter(
       (c) => !(c.baseURL === catalog.baseURL && c.group === catalog.group),

@@ -15,6 +15,22 @@ DSH（DeepSeek Harness）插件 **dsh-Aimy**：把本站中转站（one-hub）�
 
 ## 安装
 
+### 方式一：npm 直接从 GitHub 安装（推荐，无需发布到 registry）
+
+```bash
+cd ~/.dsh/profiles/desktop
+pnpm add github:Sheep1x/dsh-aimy      # 或 npm i github:Sheep1x/dsh-aimy
+```
+
+装完 npm 会自动跑 `prepare` 生成 `lib/`（仓库不提交构建产物）。
+然后在 profile 的 `package.json` 里把 `dsh-aimy` 加进 `dsh.profile.bundles`。
+
+### 方式二：本地路径
+
+```bash
+pnpm add file:D:/openwork/dsh-aimy
+```
+
 ```bash
 git clone https://github.com/Sheep1x/dsh-aimy.git
 cd dsh-aimy

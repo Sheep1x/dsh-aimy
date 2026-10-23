@@ -2,7 +2,7 @@
 
 # dsh-Aimy
 
-DSH（DeepSeek Harness）插件 **dsh-Aimy**：把本站中转站（one-hub）作为模型来源，并且**在插件里切换分组时真实切换中转站的分组**——模型列表、候选渠道、计费倍率同时变化。
+DSH（DeepSeek Harness）插件 **dsh-Aimy**：解决中转站多分组多倍率不方便管理的问题——把中转站作为模型来源接入 DSH，**支持就地切换中转站分组**，同步刷新模型列表与计费倍率。
 
 配合的中转站接口：`GET/PUT /v1/token/group`（见 [../docs/dsh-aimy.md](../docs/dsh-aimy.md)）。
 

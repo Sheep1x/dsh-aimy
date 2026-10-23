@@ -485,7 +485,7 @@ export function makeSection(deps: SectionDeps, options: SectionOptions = {}) {
       h(
         'div',
         { key: 'hint', style: S.hint },
-        '用中转站的模型，切换分组后模型列表、候选渠道与计费倍率同时变化。',
+        '解决中转站多分组多倍率的管理问题：就地切换分组，模型列表与计费倍率同步刷新。',
       ),
       h('div', { key: 'tabs', style: S.tabs }, tabButton('aimy', 'Aimy-艾米'), tabButton('compat', '兼容模式')),
     ];

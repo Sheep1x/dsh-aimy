@@ -1,7 +1,7 @@
 {
   "name": "dsh-aimy",
   "version": "0.1.0",
-  "description": "dsh-Aimy — 用 Aimy 中转站的模型，并在设置页真实切换分组（兼容 new-api / sub2api）",
+  "description": "dsh-Aimy — 解决中转站多分组多倍率不方便管理的问题，支持就地切换中转站分组，同步刷新模型列表与计费倍率（兼容 new-api / sub2api）",
   "type": "module",
   "main": "lib/index.js",
   "exports": {

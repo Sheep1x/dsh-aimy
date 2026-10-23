@@ -4,6 +4,7 @@
 // 状态/副作用用最小 hook 运行时模拟，不需要 react-dom。
 import { describe, it, before } from 'node:test';
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 
 const require = createRequire(import.meta.url);
@@ -224,6 +225,96 @@ describe('dsh-aimy client', () => {
 
     // 当前值应是 Responses（默认）
     assert.equal(protoSelect.props.value, 'openai-responses');
+  });
+
+  it('下拉框适配暗色模式：select 与每个 option 都带主题变量', async () => {
+    const Panel = registry.entries.get('main:dsh-aimy').component;
+    const tree = await mount(Panel);
+
+    const selects = elements(tree).filter((el) => el.type === 'select');
+    assert.ok(selects.length >= 1, '应有下拉框');
+
+    for (const select of selects) {
+      const bg = String(select.props.style?.background ?? '');
+      const color = String(select.props.style?.color ?? '');
+      // 必须是真实存在的主题变量，而不是写死的浅色
+      assert.match(bg, /--dsw-alias-bg-(layer|base)/u, 'select 背景应走主题变量，实际：' + bg);
+      assert.match(color, /--dsw-alias-label-/u, 'select 文字色应走主题变量，实际：' + color);
+      // colorScheme 必须显式给出，原生弹层才会按主题绘制；
+      // 具体值随 DSH 主题（body[data-ds-dark-theme]）变化，见下面的暗色用例
+      assert.match(String(select.props.style?.colorScheme ?? ''), /^(light|dark)$/u, 'select 应声明 colorScheme 以跟随主题');
+
+      // 原生弹层的每个选项也必须显式配色，否则暗色下是白底深字
+      const options = elements(select).filter((el) => el.type === 'option');
+      assert.ok(options.length > 0);
+      for (const option of options) {
+        const optBg = String(option.props.style?.background ?? '');
+        const optColor = String(option.props.style?.color ?? '');
+        assert.match(optBg, /--dsw-alias-bg-(layer|base)/u, 'option 背景应走主题变量，实际：' + optBg);
+        assert.match(optColor, /--dsw-alias-label-/u, 'option 文字色应走主题变量，实际：' + optColor);
+      }
+    }
+  });
+
+  it('body 带暗色标记时，下拉的 colorScheme 切到 dark', async () => {
+    // 造一个最小 document，让 useDarkTheme 读到暗色标记
+    const attrs = new Set(['data-ds-dark-theme']);
+    let observerCallback = null;
+    globalThis.document = {
+      body: {
+        hasAttribute: (name) => attrs.has(name),
+      },
+      createElement: () => ({ style: {}, appendChild() {}, setAttribute() {}, select() {} }),
+      execCommand: () => true,
+    };
+    globalThis.MutationObserver = class {
+      constructor(cb) { observerCallback = cb; }
+      observe() {}
+      disconnect() {}
+    };
+
+    try {
+      const Panel = registry.entries.get('main:dsh-aimy').component;
+      const tree = await mount(Panel);
+      const selects = elements(tree).filter((el) => el.type === 'select');
+      assert.ok(selects.length >= 1);
+      for (const select of selects) {
+        assert.equal(select.props.style?.colorScheme, 'dark', '暗色主题下 colorScheme 应为 dark');
+      }
+      assert.ok(observerCallback, '应当用 MutationObserver 跟随主题切换');
+    } finally {
+      delete globalThis.document;
+      delete globalThis.MutationObserver;
+    }
+  });
+
+  it('所有用到的主题变量都真实存在（防止写错名字静默失效）', async () => {
+    const source = readFileSync(new URL('../src/client/section.ts', import.meta.url), 'utf8');
+    const used = [...new Set([...source.matchAll(/--dsw-alias-[a-z0-9-]+/g)].map((m) => m[0]))];
+    assert.ok(used.length > 0, '应当用主题变量而不是全部硬编码');
+
+    // DSH 实际定义的变量白名单（从 ui 包里取到的真实名字）
+    const known = new Set([
+      '--dsw-alias-bg-base',
+      '--dsw-alias-bg-layer-1',
+      '--dsw-alias-bg-layer-2',
+      '--dsw-alias-bg-layer-3',
+      '--dsw-alias-bg-layer-4',
+      '--dsw-alias-border-l1',
+      '--dsw-alias-border-l2',
+      '--dsw-alias-border-l3',
+      '--dsw-alias-border-l4',
+      '--dsw-alias-label-primary',
+      '--dsw-alias-label-secondary',
+      '--dsw-alias-label-tertiary',
+      '--dsw-alias-state-error-primary',
+      '--dsw-alias-state-error-secondary',
+      '--dsw-alias-state-success-primary',
+      '--dsw-alias-interactive-bg-hover',
+      '--dsw-alias-fill-tertiary',
+    ]);
+    const unknown = used.filter((v) => !known.has(v));
+    assert.deepEqual(unknown, [], '用了不存在的主题变量（会静默回退到硬编码颜色）：' + unknown.join(', '));
   });
 
   it('协议下拉切换会请求保存接口', async () => {

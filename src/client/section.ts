@@ -36,7 +36,7 @@ const S = {
     gap: 14,
   },
   wrap: { maxWidth: 720, display: 'flex', flexDirection: 'column' as const, gap: 12 },
-  tabs: { display: 'flex', gap: 6, borderBottom: '1px solid var(--dsw-alias-border-secondary, rgba(128,128,128,.35))' },
+  tabs: { display: 'flex', gap: 6, borderBottom: '1px solid var(--dsw-alias-border-l2, rgba(128,128,128,.35))' },
   tab: {
     padding: '6px 12px',
     fontSize: 13,
@@ -47,9 +47,9 @@ const S = {
     borderBottom: '2px solid transparent',
     opacity: 0.7,
   },
-  tabActive: { borderBottom: '2px solid var(--dsw-alias-text-link, #4a7dff)', opacity: 1, fontWeight: 600 },
+  tabActive: { borderBottom: '2px solid var(--dsw-alias-label-primary, #4a7dff)', opacity: 1, fontWeight: 600 },
   card: {
-    border: '1px solid var(--dsw-alias-border-secondary, rgba(128,128,128,.35))',
+    border: '1px solid var(--dsw-alias-border-l2, rgba(128,128,128,.35))',
     borderRadius: 8,
     padding: '12px 14px',
     display: 'flex',
@@ -73,20 +73,41 @@ const S = {
     font: 'inherit',
     lineHeight: 1.4,
   },
-  copyHover: { background: 'var(--dsw-alias-bg-secondary, rgba(128,128,128,.16))', },
+  copyHover: { background: 'var(--dsw-alias-bg-layer-2, rgba(128,128,128,.16))', },
   copyIdle: { background: 'transparent' },
   title: { fontSize: 14, fontWeight: 600 },
   pageTitle: { fontSize: 18, fontWeight: 650, letterSpacing: '-0.01em' },
   mono: { fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace', fontSize: 12 },
   hint: { fontSize: 12, opacity: 0.7, lineHeight: 1.5 },
-  err: { fontSize: 12, color: 'var(--dsw-alias-text-danger, #d9534f)' },
-  ok: { fontSize: 12, color: 'var(--dsw-alias-text-success, #2e9e5b)' },
-  field: {
+  err: { fontSize: 12, color: 'var(--dsw-alias-state-error-primary, #d9534f)' },
+  ok: { fontSize: 12, color: 'var(--dsw-alias-state-success-primary, #2e9e5b)' },
+  /**
+   * 原生 <select> 的弹层是操作系统画的，只给 select 设颜色不够：
+   * 每个 <option> 也必须显式带 background/color，否则暗色模式下会是
+   * 白底 + 深色文字的默认配色（浅色主题下反而正常，所以容易漏）。
+   * colorScheme 由组件按 DSH 当前主题注入（见 useDarkTheme），这里只留兜底值。
+   */
+  select: {
+    boxSizing: 'border-box' as const,
     padding: '6px 8px',
     borderRadius: 6,
-    border: '1px solid var(--dsw-alias-border-secondary, rgba(128,128,128,.35))',
-    background: 'var(--dsw-alias-bg-primary, transparent)',
-    color: 'inherit',
+    border: '1px solid var(--dsw-alias-border-l2, rgba(128,128,128,.35))',
+    background: 'var(--dsw-alias-bg-layer-1, transparent)',
+    color: 'var(--dsw-alias-label-primary, inherit)',
+    fontSize: 13,
+    cursor: 'pointer',
+  },
+  option: {
+    background: 'var(--dsw-alias-bg-layer-2, #ffffff)',
+    color: 'var(--dsw-alias-label-primary, #1a1a1a)',
+  },
+  field: {
+    boxSizing: 'border-box' as const,
+    padding: '6px 8px',
+    borderRadius: 6,
+    border: '1px solid var(--dsw-alias-border-l2, rgba(128,128,128,.35))',
+    background: 'var(--dsw-alias-bg-layer-1, transparent)',
+    color: 'var(--dsw-alias-label-primary, inherit)',
     fontSize: 13,
     flex: 1,
     minWidth: 200,
@@ -94,8 +115,8 @@ const S = {
   button: {
     padding: '6px 12px',
     borderRadius: 6,
-    border: '1px solid var(--dsw-alias-border-secondary, rgba(128,128,128,.35))',
-    background: 'var(--dsw-alias-bg-secondary, transparent)',
+    border: '1px solid var(--dsw-alias-border-l2, rgba(128,128,128,.35))',
+    background: 'var(--dsw-alias-bg-layer-2, transparent)',
     color: 'inherit',
     fontSize: 13,
     cursor: 'pointer',
@@ -161,6 +182,33 @@ export function makeSection(deps: SectionDeps, options: SectionOptions = {}) {
   const { h, useState, useEffect, useCallback, request } = deps;
   const variant = options.variant ?? 'settings';
 
+  /**
+   * 当前 DSH 主题是否暗色。
+   *
+   * colorScheme: 'light dark' 只跟随**系统**偏好，而 DSH 的主题是页面内切换的
+   * （切换时给 body 加 data-ds-dark-theme）。两者可能不一致：用户在系统浅色下
+   * 选了暗色主题时，原生 <select> 弹层仍会被画成白底。所以这里直接读那个属性，
+   * 并用 MutationObserver 跟着变。
+   */
+  function useDarkTheme(): boolean {
+    const read = () =>
+      typeof document !== 'undefined' &&
+      document.body !== null &&
+      document.body.hasAttribute('data-ds-dark-theme');
+
+    const [dark, setDark] = useState<boolean>(read);
+
+    useEffect(() => {
+      if (typeof document === 'undefined' || typeof MutationObserver === 'undefined') return undefined;
+      const observer = new MutationObserver(() => setDark(read()));
+      observer.observe(document.body, { attributes: true, attributeFilter: ['data-ds-dark-theme'] });
+      setDark(read());
+      return () => observer.disconnect();
+    }, []);
+
+    return dark;
+  }
+
   /** 可点击复制的地址行：hover 有底色，点完显示「已复制」1.4s。 */
   function AddressValue(props: { value: string }) {
     const value = props && typeof props.value === 'string' ? props.value : '';
@@ -211,6 +259,7 @@ export function makeSection(deps: SectionDeps, options: SectionOptions = {}) {
   }
 
   return function OneHubSection() {
+    const dark = useDarkTheme();
     const [tab, setTab] = useState<ProfileId>('aimy');
     const [states, setStates] = useState<Record<string, PluginState | null>>({});
     const [busy, setBusy] = useState(false);
@@ -411,9 +460,9 @@ export function makeSection(deps: SectionDeps, options: SectionOptions = {}) {
 
     const optionChildren = groups.length
       ? groups.map((g: any) =>
-          h('option', { key: g.symbol, value: g.symbol }, g.name + '（' + ratioText(g.ratio) + '）'),
+          h('option', { key: g.symbol, value: g.symbol, style: S.option }, g.name + '（' + ratioText(g.ratio) + '）'),
         )
-      : [h('option', { key: 'none', value: '' }, '（无可选分组）')];
+      : [h('option', { key: 'none', value: '', style: S.option }, '（无可选分组）')];
 
     const tabButton = (id: ProfileId, text: string) =>
       h(
@@ -459,13 +508,13 @@ export function makeSection(deps: SectionDeps, options: SectionOptions = {}) {
         h(
           'select',
           {
-            style: { ...S.field, flex: '0 0 220px', minWidth: 180 },
+            style: { ...S.select, colorScheme: dark ? 'dark' : 'light', flex: '0 0 220px', minWidth: 180 },
             value: state && state.api ? state.api : compatApi,
             disabled: busy,
             title: '三种协议对应中转站的三套线路，切换后会重新挂载模型路由',
             onChange: (e: any) => void saveApi(e.target.value as RelayApi),
           },
-          ...API_OPTIONS.map((opt) => h('option', { key: opt.value, value: opt.value }, opt.label)),
+          ...API_OPTIONS.map((opt) => h('option', { key: opt.value, value: opt.value, style: S.option }, opt.label)),
         ),
         h('span', { style: S.hint }, busy ? '切换中…' : '切换后自动重挂模型路由'),
       ),
@@ -540,7 +589,7 @@ export function makeSection(deps: SectionDeps, options: SectionOptions = {}) {
               'div',
               { style: S.row },
               h('input', {
-                style: S.field,
+                style: { ...S.field, colorScheme: dark ? 'dark' : 'light' },
                 placeholder: 'https://your-gateway.example.com（/v1 可填可不填）',
                 value: compatURL,
                 onChange: (e: any) => setCompatURL(e.target.value),
@@ -582,7 +631,7 @@ export function makeSection(deps: SectionDeps, options: SectionOptions = {}) {
         'div',
         { style: S.row },
         h('input', {
-          style: S.field,
+          style: { ...S.field, colorScheme: dark ? 'dark' : 'light' },
           type: 'password',
           autoComplete: 'new-password',
           placeholder: '粘贴中转站的 sk- 令牌，保存后写入凭据库',
@@ -608,7 +657,7 @@ export function makeSection(deps: SectionDeps, options: SectionOptions = {}) {
               h(
                 'select',
                 {
-                  style: { ...S.field, flex: '0 0 220px', minWidth: 180 },
+                  style: { ...S.select, colorScheme: dark ? 'dark' : 'light', flex: '0 0 220px', minWidth: 180 },
                   value: pendingGroup,
                   disabled: busy || !canSwitch,
                   onChange: (e: any) => setPendingGroup(e.target.value),

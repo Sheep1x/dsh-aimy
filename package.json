@@ -24,7 +24,6 @@
   "scripts": {
     "build": "node build.mjs",
     "test": "node --test test/*.test.mjs",
-    "prepare": "node build.mjs",
     "prepack": "node build.mjs"
   },
   "dsh": {

@@ -183,6 +183,15 @@ src/
 
 `openai-responses`（默认）· `openai-completions` · `anthropic-messages`
 
+**协议在界面上是下拉框，两个 Tab 都能改**：状态卡片里的「协议」一行，选中即保存
+（`POST /config?profile=aimy|compat`，只传 `api`），改完服务端会按新协议重新挂载模型路由。
+预设档案只开放协议这一项，地址仍固化在配置里、只读展示；兼容模式则地址与协议都可改，
+只改协议时会保留已填地址。
+
+协议变化必须触发重挂载：同一个模型集合在 completions / responses 下是两套线路，
+`sameModels()` 只看模型会误判成「没变化」，所以 `forceRemount()` 会先丢掉旧路由
+再重建（`ProviderMount.api` 记录当前线路用于比较）。
+
 取值必须与 `@deepseek-ai/dsh-llm-pi-ai` 的 `supportedProtocols()` 完全一致，否则 pi-ai 的
 Config 校验会报 *names api …, which this build cannot serve*。设置页的协议下拉从
 `shared/types.ts` 的 `API_OPTIONS` 生成，新增协议只需改那一处。

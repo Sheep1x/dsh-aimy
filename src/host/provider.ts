@@ -36,6 +36,8 @@ export interface ProviderOptions {
 /** 一次挂载的句柄：可以在目录变化时重挂，也可以整体卸载。 */
 export interface ProviderMount {
   readonly mounted: boolean;
+  /** 这条路由当前挂的线路协议（协议变了必须重建，不能只换模型） */
+  readonly api: RelayApi;
   /** 路由由谁管理：本插件自挂的 fiber，还是写进了宿主已有的 pi-ai 配置 */
   readonly managedBy: 'fiber' | 'settings';
   /** 回读宿主 llm 注册表：路由是否真的注册上、模型数是否非零 */
@@ -218,6 +220,9 @@ export async function createProviderMount(
 
   return {
     managedBy: 'fiber' as const,
+    get api() {
+      return opts.api ?? DEFAULT_API;
+    },
     get mounted() {
       return Boolean(fiber);
     },

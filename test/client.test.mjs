@@ -114,7 +114,7 @@ const stateBody = {
   displayName: 'Aimy-艾米',
   preset: true,
   baseURL: RELAY_URL,
-  api: 'openai-completions',
+  api: 'openai-responses',
   configured: true,
   connected: false,
   supportsSwitch: false,
@@ -203,5 +203,48 @@ describe('dsh-aimy client', () => {
 
     assert.deepEqual(written, [RELAY_URL], '点击后应把地址写进剪贴板');
     assert.ok(textOf(tree).includes('已复制'), '点击后应提示已复制');
+  });
+
+  it('协议下拉框：三个选项齐全，默认选中 Responses', async () => {
+    const Panel = registry.entries.get('main:dsh-aimy').component;
+    const tree = await mount(Panel);
+
+    // 找协议下拉：它的 onChange 会 POST /config，且选项是三种协议
+    const selects = elements(tree).filter((el) => el.type === 'select');
+    const protoSelect = selects.find((el) =>
+      elements(el).some((o) => o.type === 'option' && o.props.value === 'openai-responses'),
+    );
+    assert.ok(protoSelect, '面板里应有协议下拉框');
+
+    const options = elements(protoSelect)
+      .filter((el) => el.type === 'option')
+      .map((el) => ({ value: el.props.value, text: textOf(el) }));
+    assert.deepEqual(options.map((o) => o.value), ['openai-responses', 'openai-completions', 'anthropic-messages']);
+    assert.deepEqual(options.map((o) => o.text), ['OpenAI Responses', 'OpenAI Chat Completions', 'Anthropic Messages']);
+
+    // 当前值应是 Responses（默认）
+    assert.equal(protoSelect.props.value, 'openai-responses');
+  });
+
+  it('协议下拉切换会请求保存接口', async () => {
+    const calls = [];
+    globalThis.fetch = async (url, init) => {
+      calls.push({ url: String(url), method: init?.method ?? 'GET', body: init?.body ?? null });
+      return { text: async () => JSON.stringify({ success: true, data: stateBody }) };
+    };
+
+    const Panel = registry.entries.get('main:dsh-aimy').component;
+    const tree = await mount(Panel);
+    const protoSelect = elements(tree)
+      .filter((el) => el.type === 'select')
+      .find((el) => elements(el).some((o) => o.type === 'option' && o.props.value === 'openai-completions'));
+
+    assert.ok(protoSelect, '找不到协议下拉');
+    protoSelect.props.onChange({ target: { value: 'openai-completions' } });
+    await settle();
+
+    const save = calls.find((c) => c.method === 'POST' && c.url.includes('/config?profile=aimy'));
+    assert.ok(save, '切换协议应 POST /config?profile=aimy，实际请求：' + JSON.stringify(calls.map((c) => c.url)));
+    assert.deepEqual(JSON.parse(save.body), { api: 'openai-completions' });
   });
 });

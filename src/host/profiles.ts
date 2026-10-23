@@ -46,6 +46,8 @@ export interface CompatSettings {
 interface ProfileFile {
   version: 1;
   compat?: CompatSettings;
+  /** 预设档案只允许覆盖协议（地址固化在配置里）*/
+  aimy?: { api: RelayApi };
 }
 
 function profilesPath(): string {
@@ -61,11 +63,15 @@ export class ProfileSettingsStore {
   load(): void {
     try {
       const parsed = JSON.parse(readFileSync(this.filePath, 'utf8')) as ProfileFile;
-      if (parsed && parsed.version === 1 && parsed.compat && typeof parsed.compat.baseURL === 'string') {
-        this.data = {
-          version: 1,
-          compat: { baseURL: parsed.compat.baseURL, api: normalizeApi(parsed.compat.api) },
-        };
+      if (parsed && parsed.version === 1) {
+        const next: ProfileFile = { version: 1 };
+        if (parsed.aimy && typeof parsed.aimy === 'object') {
+          next.aimy = { api: normalizeApi((parsed.aimy as { api?: unknown }).api) };
+        }
+        if (parsed.compat && typeof parsed.compat.baseURL === 'string') {
+          next.compat = { baseURL: parsed.compat.baseURL, api: normalizeApi(parsed.compat.api) };
+        }
+        this.data = next;
       }
     } catch {
       this.data = { version: 1 };
@@ -76,13 +82,30 @@ export class ProfileSettingsStore {
     return this.data.compat;
   }
 
+  /** 预设档案的协议覆盖；未设置时返回 undefined，由调用方回退到配置默认值。 */
+  aimyApi(): RelayApi | undefined {
+    return this.data.aimy?.api;
+  }
+
+  setAimyApi(api: RelayApi): void {
+    this.data = { ...this.data, version: 1, aimy: { api: normalizeApi(api) } };
+    this.persist();
+  }
+
+  clearAimyApi(): void {
+    const { aimy: _drop, ...rest } = this.data;
+    this.data = { ...rest, version: 1 };
+    this.persist();
+  }
+
   setCompat(settings: CompatSettings): void {
-    this.data = { version: 1, compat: { baseURL: settings.baseURL, api: normalizeApi(settings.api) } };
+    this.data = { ...this.data, version: 1, compat: { baseURL: settings.baseURL, api: normalizeApi(settings.api) } };
     this.persist();
   }
 
   clearCompat(): void {
-    this.data = { version: 1 };
+    const { compat: _drop, ...rest } = this.data;
+    this.data = { ...rest, version: 1 };
     this.persist();
   }
 
@@ -150,7 +173,7 @@ export function resolveProfile(input: ResolveProfileInput): ProfileConfig {
       baseURL: normalizeBaseURL(defaults.baseURL),
       apiKeyRef: defaults.apiKeyRef,
       routeName: defaults.routeName,
-      api: defaults.api,
+      api: settings.aimyApi() ?? normalizeApi(defaults.api),
       preset: true,
       defaultContextWindow: defaults.defaultContextWindow,
       defaultMaxTokens: defaults.defaultMaxTokens,

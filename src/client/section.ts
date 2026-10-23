@@ -297,6 +297,40 @@ export function makeSection(deps: SectionDeps, options: SectionOptions = {}) {
       }
     }, [putState, request, tab]);
 
+    /** 改协议：两个档案通用，改完立即重挂（服务端会重新拉目录并换线路）。 */
+    const saveApi = useCallback(
+      async (nextApi: RelayApi) => {
+        const previous = state && state.api ? state.api : null;
+        setCompatApi(nextApi);
+        setBusy(true);
+        setMessage(null);
+        try {
+          const res = await request('/config?profile=' + tab, {
+            method: 'POST',
+            body: JSON.stringify({ api: nextApi }),
+          });
+          if (res && res.success === false) {
+            setMessage({ kind: 'err', text: res.message || '切换协议失败' });
+            if (previous) setCompatApi(previous);
+            return;
+          }
+          if (res && res.data) {
+            putState(tab, res.data as PluginState);
+            // 以服务端确认值为准（它可能把别名归整成标准名）
+            const confirmed = (res.data as PluginState).api;
+            if (confirmed) setCompatApi(confirmed);
+          }
+          setMessage({ kind: 'ok', text: '协议已切换' });
+        } catch (error) {
+          setMessage({ kind: 'err', text: error instanceof Error ? error.message : String(error) });
+          if (previous) setCompatApi(previous);
+        } finally {
+          setBusy(false);
+        }
+      },
+      [putState, request, state, tab],
+    );
+
     const saveCompat = useCallback(async () => {
       const url = compatURL.trim();
       if (!url) {
@@ -421,6 +455,23 @@ export function makeSection(deps: SectionDeps, options: SectionOptions = {}) {
       h(
         'div',
         { style: S.row },
+        h('span', { style: S.label }, '协议'),
+        h(
+          'select',
+          {
+            style: { ...S.field, flex: '0 0 220px', minWidth: 180 },
+            value: state && state.api ? state.api : compatApi,
+            disabled: busy,
+            title: '三种协议对应中转站的三套线路，切换后会重新挂载模型路由',
+            onChange: (e: any) => void saveApi(e.target.value as RelayApi),
+          },
+          ...API_OPTIONS.map((opt) => h('option', { key: opt.value, value: opt.value }, opt.label)),
+        ),
+        h('span', { style: S.hint }, busy ? '切换中…' : '切换后自动重挂模型路由'),
+      ),
+      h(
+        'div',
+        { style: S.row },
         h('span', { style: S.label }, '状态'),
         h(
           'span',
@@ -498,16 +549,6 @@ export function makeSection(deps: SectionDeps, options: SectionOptions = {}) {
             h(
               'div',
               { style: S.row },
-              h('span', { style: S.label }, '协议'),
-              h(
-                'select',
-                {
-                  style: { ...S.field, flex: '0 0 200px', minWidth: 160 },
-                  value: compatApi,
-                  onChange: (e: any) => setCompatApi(e.target.value),
-                },
-                ...API_OPTIONS.map((opt) => h('option', { key: opt.value, value: opt.value }, opt.label)),
-              ),
               h('button', { style: S.button, disabled: busy, onClick: () => void saveCompat() }, '保存地址'),
               h('button', { style: S.button, disabled: busy, onClick: () => void clearCompat() }, '清除'),
             ),

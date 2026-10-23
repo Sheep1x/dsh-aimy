@@ -2,7 +2,7 @@
 import { after, before, describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { readFileSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -843,6 +843,149 @@ describe('写进现有 pi-ai 配置（首选路径）', () => {
         '清除兼容模式时应摘掉 settings 里的 provider',
       );
     } finally {
+      rmSync(dshHome, { recursive: true, force: true });
+    }
+  });
+});
+
+
+describe('协议可切换（下拉框）', () => {
+  it('预设档案：改协议会重挂载并落盘，地址仍不可改', async () => {
+    const dshHome = mkdtempSync(join(tmpdir(), 'dsh-aimy-api-switch-'));
+    const relay = makeRelay({ supportsSwitch: false });
+    await new Promise((r) => relay.server.listen(0, '127.0.0.1', r));
+    const { port } = relay.server.address();
+    const baseURL = 'http://127.0.0.1:' + port;
+    const adapter = await import('./fake-adapter.mjs');
+    try {
+      const plugin = await startPlugin(baseURL, dshHome);
+      const before = adapter.mounts.length;
+
+      // 默认应是 Responses
+      const initial = await json(plugin.base + '/state');
+      assert.equal(initial.body.data.api, 'openai-responses');
+
+      // 切到 Chat Completions
+      const switched = await json(plugin.base + '/config?profile=aimy', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ api: 'openai-completions' }),
+      });
+      assert.equal(switched.status, 200, '预设档案应允许改协议');
+      assert.equal(switched.body.data.api, 'openai-completions');
+
+      // 重挂载：应当出现新的 onehub 挂载，且 api 变了
+      const after = adapter.mounts.slice(before).filter((m) => m && m.onehub);
+      assert.ok(after.length > 0, '协议变更后应重新挂载模型路由');
+      assert.equal(after[after.length - 1].onehub.api, 'openai-completions');
+      // OpenAI 系都补 /v1
+      assert.match(after[after.length - 1].onehub.baseURL, /\/v1$/u);
+
+      // 落盘：profiles.json 里记着覆盖值
+      const saved = JSON.parse(readFileSync(join(dshHome, 'dsh-aimy', 'profiles.json'), 'utf8'));
+      assert.equal(saved.aimy.api, 'openai-completions');
+
+      // 地址仍然不可改
+      const addr = await json(plugin.base + '/config?profile=aimy', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ baseURL: 'https://evil.example.com' }),
+      });
+      assert.equal(addr.status, 403, '预设档案的地址必须仍被拒绝');
+
+      // 切到 Anthropic：不补 /v1
+      const anthropic = await json(plugin.base + '/config?profile=aimy', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ api: 'anthropic-messages' }),
+      });
+      assert.equal(anthropic.status, 200);
+      const last = adapter.mounts.filter((m) => m && m.onehub).pop();
+      assert.equal(last.onehub.api, 'anthropic-messages');
+      assert.equal(last.onehub.baseURL, baseURL, 'anthropic 不应带 /v1');
+
+      await new Promise((r) => plugin.server.close(r));
+    } finally {
+      await new Promise((r) => relay.server.close(r));
+      rmSync(dshHome, { recursive: true, force: true });
+    }
+  });
+
+  it('兼容模式：只传 api 时保留原地址', async () => {
+    const dshHome = mkdtempSync(join(tmpdir(), 'dsh-aimy-api-compat-'));
+    const relay = makeRelay({ supportsSwitch: false });
+    await new Promise((r) => relay.server.listen(0, '127.0.0.1', r));
+    const { port } = relay.server.address();
+    const relayBase = 'http://127.0.0.1:' + port;
+    try {
+      const credentials = makeFakeCredentials();
+      const plugin = await startPlugin(relayBase, dshHome, { credentials });
+      await json(plugin.base + '/credentials?profile=compat', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ apiKey: KEY }),
+      });
+      await json(plugin.base + '/config?profile=compat', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ baseURL: relayBase, api: 'openai-responses' }),
+      });
+
+      // 只改协议
+      const res = await json(plugin.base + '/config?profile=compat', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ api: 'anthropic-messages' }),
+      });
+      assert.equal(res.status, 200);
+      assert.equal(res.body.data.api, 'anthropic-messages');
+      assert.equal(res.body.data.connected, true, '地址应保留并仍能拉到目录');
+
+      const saved = JSON.parse(readFileSync(join(dshHome, 'dsh-aimy', 'profiles.json'), 'utf8'));
+      assert.equal(saved.compat.baseURL, relayBase, '只改协议不应清空地址');
+      assert.equal(saved.compat.api, 'anthropic-messages');
+
+      await new Promise((r) => plugin.server.close(r));
+    } finally {
+      await new Promise((r) => relay.server.close(r));
+      rmSync(dshHome, { recursive: true, force: true });
+    }
+  });
+
+  it('清除兼容模式不会顺手删掉预设档案的协议覆盖', async () => {
+    const dshHome = mkdtempSync(join(tmpdir(), 'dsh-aimy-clear-keep-'));
+    const relay = makeRelay({ supportsSwitch: false });
+    await new Promise((r) => relay.server.listen(0, '127.0.0.1', r));
+    const { port } = relay.server.address();
+    const relayBase = 'http://127.0.0.1:' + port;
+    try {
+      const plugin = await startPlugin(relayBase, dshHome);
+      await json(plugin.base + '/config?profile=aimy', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ api: 'openai-completions' }),
+      });
+      const credentials = makeFakeCredentials();
+      await json(plugin.base + '/credentials?profile=compat', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ apiKey: KEY }),
+      });
+      await json(plugin.base + '/config?profile=compat', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ baseURL: relayBase, api: 'openai-responses' }),
+      });
+
+      await json(plugin.base + '/config?profile=compat', { method: 'DELETE' });
+
+      const saved = JSON.parse(readFileSync(join(dshHome, 'dsh-aimy', 'profiles.json'), 'utf8'));
+      assert.equal(saved.compat, undefined, '兼容模式应被清除');
+      assert.equal(saved.aimy.api, 'openai-completions', '预设档案的协议覆盖必须保留');
+
+      await new Promise((r) => plugin.server.close(r));
+    } finally {
+      await new Promise((r) => relay.server.close(r));
       rmSync(dshHome, { recursive: true, force: true });
     }
   });

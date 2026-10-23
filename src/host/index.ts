@@ -340,6 +340,21 @@ export function apply(ctx: any, config?: Config): void {
     });
   };
 
+  /**
+   * 强制丢弃该档案当前的路由，让下一次 syncProvider 重新挂。
+   * 协议改变时必须走这条：同一个模型集合在 completions / responses 下是两套线路，
+   * syncProvider 的 sameModels() 短路会误判成「没变化」。
+   */
+  const forceRemount = async (profile: ProfileConfig): Promise<void> => {
+    const mount = mounts.get(profile.id);
+    if (mount) {
+      await mount.dispose();
+      mounts.delete(profile.id);
+    }
+    settingsRoutes.delete(profile.id);
+    mountErrors.delete(profile.id);
+  };
+
   /** 目录变化 → 首次挂载 / 重挂载该档案的模型路由。失败只记录。 */
   const syncProvider = async (profile: ProfileConfig, models: RelayModel[]): Promise<{ ok: boolean; error?: string }> => {
     if (!profile.baseURL) {
@@ -378,7 +393,13 @@ export function apply(ctx: any, config?: Config): void {
 
     try {
       const existing = mounts.get(profile.id);
-      if (!existing) {
+      // 协议变了：旧 fiber 挂的是旧线路，必须重建（sameModels 只看模型，会漏掉这个）
+      if (existing && (existing as any).api !== undefined && (existing as any).api !== profile.api) {
+        await existing.dispose();
+        mounts.delete(profile.id);
+      }
+      const current = mounts.get(profile.id);
+      if (!current) {
         const created = await createProviderMount(ctx, {
           routeName: profile.routeName,
           displayName: profile.displayName,
@@ -392,7 +413,7 @@ export function apply(ctx: any, config?: Config): void {
         });
         mounts.set(profile.id, created);
       } else {
-        await existing.update(models);
+        await current.update(models);
       }
 
       // 挂载后回读注册表：fiber 存在 ≠ 模型可见
@@ -581,21 +602,46 @@ export function apply(ctx: any, config?: Config): void {
               return;
             }
 
-            // 兼容模式：保存地址与协议（预设档案不可改）
+            // 保存地址 / 协议。
+            //   预设档案：只能改协议（地址固化在配置里，界面只读展示）
+            //   兼容模式：地址与协议都可改；只传 api 时保留原地址
             if (method === 'POST' && route === '/config') {
-              if (profile.preset) {
-                sendJson(res, 403, { success: false, message: '预设档案的地址不可修改' });
-                return;
-              }
               const payload = parseJson(await readBody(req));
-              const baseURL = normalizeBaseURL(String(payload?.baseURL ?? ''));
-              const api: RelayApi = normalizeApi(payload?.api);
-              if (!/^https?:\/\//i.test(baseURL)) {
-                sendJson(res, 400, { success: false, message: '请填写完整的 http(s) 地址' });
+              const hasBaseURL = typeof payload?.baseURL === 'string' && payload.baseURL.trim().length > 0;
+              const hasApi = payload?.api !== undefined;
+
+              if (!hasBaseURL && !hasApi) {
+                sendJson(res, 400, { success: false, message: '没有可保存的字段' });
                 return;
               }
-              settings.setCompat({ baseURL, api });
+
+              if (profile.preset) {
+                if (hasBaseURL) {
+                  sendJson(res, 403, { success: false, message: '预设档案的地址不可修改' });
+                  return;
+                }
+                settings.setAimyApi(normalizeApi(payload?.api));
+              } else {
+                if (hasBaseURL) {
+                  const baseURL = normalizeBaseURL(String(payload?.baseURL ?? ''));
+                  if (!/^https?:\/\//i.test(baseURL)) {
+                    sendJson(res, 400, { success: false, message: '请填写完整的 http(s) 地址' });
+                    return;
+                  }
+                  settings.setCompat({ baseURL, api: normalizeApi(payload?.api ?? profile.api) });
+                } else {
+                  // 只改协议：地址必须已经存在，否则这条档案本来就没法联网
+                  if (!profile.baseURL) {
+                    sendJson(res, 400, { success: false, message: '请先填写地址' });
+                    return;
+                  }
+                  settings.setCompat({ baseURL: profile.baseURL, api: normalizeApi(payload?.api) });
+                }
+              }
+
+              // 协议变了要重新挂载，这里用 refresh 强制重建
               const saved = resolve(profileId);
+              await forceRemount(saved);
               const state = withProvider(decorate(await stateFor(saved, true), saved), saved);
               sendJson(res, 200, { success: true, message: '已保存', data: state });
               return;

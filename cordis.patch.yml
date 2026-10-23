@@ -13,7 +13,7 @@
       name: 'dsh-aimy'
       config:
         # ── Aimy 预设 ─────────────────────────────────────────────
-        # 站点根地址（不要带 /v1）；界面上不展示、用户不可改
+        # 站点根地址（不要带 /v1）；界面上只读展示、用户不可改
         baseURL: 'https://aimy.sheep1x.top'
         # 密钥的凭据引用名；host 侧通过 ctx.credentials.resolve() 解析，不落明文
         apiKeyRef: 'ONEHUB_API_KEY'

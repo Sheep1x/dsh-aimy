@@ -1,6 +1,6 @@
 /**
  * 「中转站」设置分区：两个 Tab
- *   - Aimy-艾米：内置预设，地址不展示、不可编辑；支持真实切分组
+ *   - Aimy-艾米：内置预设，地址只读展示、不可编辑；支持真实切分组
  *   - 兼容模式：用户自填 URL + 协议（new-api / sub2api / 任意 OpenAI 兼容网关）
  *
  * 样式只用 CSS 变量 --dsw-alias-*（主题跟随亮/暗），不依赖 UI 组件库。
@@ -16,6 +16,25 @@ export interface SectionDeps {
 }
 
 const S = {
+  // 面板页根节点：centerCol 是 overflow:hidden 的 flex 列，根节点负责撑满 + 滚动
+  panelRoot: {
+    flex: '1 1 auto',
+    minHeight: 0,
+    width: '100%',
+    display: 'flex',
+    flexDirection: 'column' as const,
+    overflowY: 'auto' as const,
+  },
+  page: {
+    boxSizing: 'border-box' as const,
+    width: '100%',
+    maxWidth: 880,
+    margin: '0 auto',
+    padding: '24px 24px 48px',
+    display: 'flex',
+    flexDirection: 'column' as const,
+    gap: 14,
+  },
   wrap: { maxWidth: 720, display: 'flex', flexDirection: 'column' as const, gap: 12 },
   tabs: { display: 'flex', gap: 6, borderBottom: '1px solid var(--dsw-alias-border-secondary, rgba(128,128,128,.35))' },
   tab: {
@@ -39,7 +58,25 @@ const S = {
   },
   row: { display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' as const },
   label: { fontSize: 12, opacity: 0.7, minWidth: 64 },
+  // 可点复制的地址：按钮本身不可见，靠 hover 底色 + 「复制 / 已复制」提示表达可点
+  copy: {
+    display: 'inline-flex',
+    alignItems: 'center',
+    gap: 6,
+    padding: '2px 6px',
+    marginLeft: -6,
+    border: 'none',
+    borderRadius: 6,
+    background: 'transparent',
+    color: 'inherit',
+    cursor: 'pointer',
+    font: 'inherit',
+    lineHeight: 1.4,
+  },
+  copyHover: { background: 'var(--dsw-alias-bg-secondary, rgba(128,128,128,.16))', },
+  copyIdle: { background: 'transparent' },
   title: { fontSize: 14, fontWeight: 600 },
+  pageTitle: { fontSize: 18, fontWeight: 650, letterSpacing: '-0.01em' },
   mono: { fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace', fontSize: 12 },
   hint: { fontSize: 12, opacity: 0.7, lineHeight: 1.5 },
   err: { fontSize: 12, color: 'var(--dsw-alias-text-danger, #d9534f)' },
@@ -65,12 +102,113 @@ const S = {
   },
 };
 
+/**
+ * 展示用地址：预设档案的 baseURL 是给 SDK 用的（openai-completions 必须带 /v1），
+ * 界面上给用户看站点根地址即可；兼容模式按用户填的原样展示。
+ */
+function displayBaseURL(state: PluginState | null): string {
+  if (!state || !state.baseURL) return '';
+  return state.preset ? state.baseURL.replace(/\/v1$/i, '') : state.baseURL;
+}
+
+/**
+ * 复制文本到剪贴板。优先 navigator.clipboard（localhost / https 可用），
+ * 失败时退回 textarea + execCommand，保证在非安全上下文里也能复制。
+ */
+async function copyText(text: string): Promise<boolean> {
+  try {
+    const clipboard = (navigator as any)?.clipboard;
+    if (clipboard && typeof clipboard.writeText === 'function') {
+      await clipboard.writeText(text);
+      return true;
+    }
+  } catch {
+    // 落到下面的兜底
+  }
+  try {
+    const area = document.createElement('textarea');
+    area.value = text;
+    area.setAttribute('readonly', 'readonly');
+    area.style.position = 'fixed';
+    area.style.top = '-9999px';
+    area.style.opacity = '0';
+    document.body.appendChild(area);
+    area.select();
+    const ok = document.execCommand('copy');
+    document.body.removeChild(area);
+    return ok;
+  } catch {
+    return false;
+  }
+}
+
 function ratioText(ratio: number): string {
   return '×' + (Number.isFinite(ratio) ? ratio : 1).toFixed(2);
 }
 
-export function makeSection(deps: SectionDeps) {
+/** 区段/面板标题：设置页分区名与侧栏面板名共用。 */
+const PANEL_TITLE = 'Aimy-艾米';
+
+export interface SectionOptions {
+  /**
+   * settings = 设置弹窗里的分区（紧凑、限宽 720）
+   * panel    = 首页左侧栏点开的整页面板（撑满主区、自带滚动）
+   */
+  variant?: 'settings' | 'panel';
+}
+
+export function makeSection(deps: SectionDeps, options: SectionOptions = {}) {
   const { h, useState, useEffect, useCallback, request } = deps;
+  const variant = options.variant ?? 'settings';
+
+  /** 可点击复制的地址行：hover 有底色，点完显示「已复制」1.4s。 */
+  function AddressValue(props: { value: string }) {
+    const value = props && typeof props.value === 'string' ? props.value : '';
+    const [copied, setCopied] = useState(false);
+    const [hovered, setHovered] = useState(false);
+
+    const copy = useCallback(async () => {
+      if (!value) return;
+      const ok = await copyText(value);
+      setCopied(ok);
+      if (ok) setTimeout(() => setCopied(false), 1400);
+    }, [value]);
+
+    // 没地址时就是一段普通文字，不给可点的错觉
+    if (!value) return h('span', { style: S.hint }, '未配置');
+
+    return h(
+      'button',
+      {
+        type: 'button',
+        title: copied ? '已复制' : '点击复制地址',
+        'aria-label': '复制地址 ' + value,
+        style: { ...S.copy, ...(hovered ? S.copyHover : S.copyIdle) },
+        onClick: () => void copy(),
+        onMouseEnter: () => setHovered(true),
+        onMouseLeave: () => setHovered(false),
+      },
+      h('span', { style: S.mono }, value),
+      h(
+        'svg',
+        {
+          width: 12,
+          height: 12,
+          viewBox: '0 0 24 24',
+          fill: 'none',
+          stroke: 'currentColor',
+          strokeWidth: 2,
+          strokeLinecap: 'round',
+          strokeLinejoin: 'round',
+          style: { opacity: 0.55, flex: 'none' },
+          'aria-hidden': 'true',
+        },
+        h('rect', { x: 9, y: 9, width: 12, height: 12, rx: 2 }),
+        h('path', { d: 'M5 15V5a2 2 0 0 1 2-2h8' }),
+      ),
+      h('span', { style: copied ? S.ok : S.hint }, copied ? '已复制' : '复制'),
+    );
+  }
 
   return function OneHubSection() {
     const [tab, setTab] = useState<ProfileId>('aimy');
@@ -260,11 +398,11 @@ export function makeSection(deps: SectionDeps) {
 
     /* ---- 头部：标题 + Tab ---- */
     const header = [
-      h('div', { key: 'title', style: S.title }, '中转站'),
+      h('div', { key: 'title', style: variant === 'panel' ? S.pageTitle : S.title }, PANEL_TITLE),
       h(
         'div',
         { key: 'hint', style: S.hint },
-        '用中转站的模型，并在设置里切换分组（切换后模型列表、候选渠道与计费倍率同时变化）。',
+        '用中转站的模型，切换分组后模型列表、候选渠道与计费倍率同时变化。',
       ),
       h('div', { key: 'tabs', style: S.tabs }, tabButton('aimy', 'Aimy-艾米'), tabButton('compat', '兼容模式')),
     ];
@@ -273,14 +411,13 @@ export function makeSection(deps: SectionDeps) {
     const statusCard = h(
       'div',
       { style: S.card },
-      state && state.preset
-        ? null
-        : h(
-            'div',
-            { style: S.row },
-            h('span', { style: S.label }, '地址'),
-            h('span', { style: S.mono }, state && state.baseURL ? state.baseURL : '未配置'),
-          ),
+      h(
+        'div',
+        { style: S.row },
+        h('span', { style: S.label }, '地址'),
+        h(AddressValue, { value: displayBaseURL(state) }),
+        state && state.preset ? h('span', { style: S.hint }, '预设地址（不可修改）') : null,
+      ),
       h(
         'div',
         { style: S.row },
@@ -288,7 +425,7 @@ export function makeSection(deps: SectionDeps) {
         h(
           'span',
           { style: state && state.connected ? S.ok : S.err },
-          state && state.connected ? '已连接' : state && state.error ? '未连接' : '读取中…',
+          !state ? '读取中…' : state.connected ? '已连接' : '未连接',
         ),
         state ? h('span', { style: S.hint }, '协议 ' + state.api) : null,
       ),
@@ -323,6 +460,22 @@ export function makeSection(deps: SectionDeps) {
         ? h('div', { style: S.err }, state.provider.error)
         : null,
       state && state.error ? h('div', { style: S.err }, state.error) : null,
+      state && (state as any).diagnostics
+        ? h(
+            'div',
+            { style: S.hint },
+            '诊断：注册表 ' +
+              String((state as any).diagnostics.registryPresent) +
+              ' · 路由模型 ' +
+              String((state as any).diagnostics.registryModels ?? '—') +
+              ' · 密钥 ' +
+              String((state as any).diagnostics.credentialResolve ?? '—') +
+              ' · settings ' +
+              String((state as any).diagnostics.settingsChannel ?? '—') +
+              ' · providers ' +
+              JSON.stringify((state as any).diagnostics.providers ?? []),
+          )
+        : null,
     );
 
     /* ---- 兼容模式：地址与协议 ---- */
@@ -459,6 +612,15 @@ export function makeSection(deps: SectionDeps) {
             message ? h('div', { style: message.kind === 'ok' ? S.ok : S.err }, message.text) : null,
           );
 
-    return h('div', { style: S.wrap }, ...header, statusCard, compatCard, keyCard, groupCard);
+    const body = h(
+      'div',
+      { style: variant === 'panel' ? S.page : S.wrap },
+      ...header,
+      statusCard,
+      compatCard,
+      keyCard,
+      groupCard,
+    );
+    return variant === 'panel' ? h('div', { style: S.panelRoot }, body) : body;
   };
 }

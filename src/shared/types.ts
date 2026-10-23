@@ -21,6 +21,22 @@ export interface TokenGroupState {
   groups: RelayGroup[];
 }
 
+/**
+ * 三种线路协议，取值与 @deepseek-ai/dsh-llm-pi-ai 的 supportedProtocols() 完全一致，
+ * 顺序也与它相同（它把「手写网关最常说的协议」放在最前，配置界面应据此决定默认值）。
+ */
+export type RelayApi = 'openai-responses' | 'openai-completions' | 'anthropic-messages';
+
+/** 默认协议：目标站点主推 Responses。 */
+export const DEFAULT_API: RelayApi = 'openai-responses';
+
+/** 界面里的协议下拉项。 */
+export const API_OPTIONS: ReadonlyArray<{ value: RelayApi; label: string }> = [
+  { value: 'openai-responses', label: 'OpenAI Responses' },
+  { value: 'openai-completions', label: 'OpenAI Chat Completions' },
+  { value: 'anthropic-messages', label: 'Anthropic Messages' },
+];
+
 /** 密钥的存储状态（描述，从不包含密钥值）。 */
 export interface CredentialStatus {
   configured: boolean;
@@ -64,7 +80,8 @@ export interface PluginState {
   baseURL: string;
   /** true 表示该档案是内置预设，地址只读（不可编辑）*/
   preset: boolean;
-  api: 'openai-completions' | 'anthropic-messages';
+  /** 与 @deepseek-ai/dsh-llm-pi-ai 的 supportedProtocols() 一致 */
+  api: RelayApi;
   /** 兼容模式是否已填地址 */
   configured: boolean;
   connected: boolean;
@@ -93,7 +110,7 @@ export function emptyState(baseURL: string, overrides: Partial<PluginState> = {}
     profile: 'aimy',
     displayName: '',
     preset: false,
-    api: 'openai-completions',
+    api: DEFAULT_API,
     configured: true,
     ...overrides,
     baseURL,

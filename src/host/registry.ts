@@ -15,7 +15,7 @@
  * 写 settings 则完全避开重复注册：provider 进入的是**同一个** pi-ai 实例的 profiles()，
  * 由它自己调 registerAdapter；也顺带获得 Models 设置页的可编辑能力。
  */
-import type { RelayModel } from '../shared/types';
+import type { RelayApi, RelayModel } from '../shared/types';
 
 export interface RegistryTarget {
   /** settings/profile 里 pi-ai 条目的 id，默认 llm-pi-ai */
@@ -25,7 +25,7 @@ export interface RegistryTarget {
   displayName: string;
   baseURL: string;
   apiKeyRef: string;
-  api: 'openai-completions' | 'anthropic-messages';
+  api: RelayApi;
   models: RelayModel[];
   defaultContextWindow: number;
   defaultMaxTokens: number;

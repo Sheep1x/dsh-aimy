@@ -179,16 +179,28 @@ src/
   client/section.ts   「中转站」设置分区 UI
 ```
 
+## 协议（三种，与 pi-ai 的 supportedProtocols() 一致）
+
+`openai-responses`（默认）· `openai-completions` · `anthropic-messages`
+
+取值必须与 `@deepseek-ai/dsh-llm-pi-ai` 的 `supportedProtocols()` 完全一致，否则 pi-ai 的
+Config 校验会报 *names api …, which this build cannot serve*。设置页的协议下拉从
+`shared/types.ts` 的 `API_OPTIONS` 生成，新增协议只需改那一处。
+
+`normalizeApi()` 还接受常见别名（`responses` / `completions` / `anthropic` / `messages` /
+`claude` …），未识别时回退到默认的 Responses。
+
 ## 地址怎么填（/v1 可填可不填）
 
-两种协议的 SDK 自己拼接口路径，口径相反，所以插件按协议归整：
+OpenAI 系与 Anthropic 的 SDK 拼路径口径相反，所以插件按协议归整：
 
 | 协议 | SDK 自动拼的路径 | 归整结果 |
 |---|---|---|
-| `openai-completions` | `…/chat/completions` | baseURL **必须**以 `/v1` 结尾 → 没填自动补，已填不重复 |
+| `openai-responses`（默认） | `…/responses` | baseURL **必须**以 `/v1` 结尾 → 没填自动补，已填不重复 |
+| `openai-completions` | `…/chat/completions` | 同上 |
 | `anthropic-messages` | `…/v1/messages` | baseURL **不能**带 `/v1` → 填了自动剥掉 |
 
-容错（两种协议都适用）：用户若整段粘贴了端点路径（`…/v1/chat/completions`、`…/v1/messages`），
+容错（三种协议都适用）：用户若整段粘贴了端点路径（`…/v1/chat/completions`、`…/v1/messages`），
 会先被剥回根地址；我们自己的模型/分组拉取也会用 `apiRoot()` 做同样归整，
 所以不会出现 `/v1/v1/models`。
 
@@ -233,7 +245,7 @@ src/
 ctx.plugin(PiAiAdapter, {
   providers: {
     onehub: {
-      api: 'openai-completions',
+      api: 'openai-responses',
       baseURL: 'https://你的站点/v1',
       apiKeyEnv: 'ONEHUB_API_KEY',
       defaultContextWindow: 131072,

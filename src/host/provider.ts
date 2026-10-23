@@ -1,15 +1,19 @@
 /**
- * 把 @deepseek-ai/dsh-llm-pi-ai 挂进本插件的 fiber，让 DSH 模型选择器出现中转站的模型。
+ * 让中转站的模型出现在 DSH 模型选择器里。
  *
- * 为什么是「重挂载」而不是「原地改配置」：
- *   pi-ai 的 Config 里 providers 是 volatile 字段，但 createVolatile 返回的是
- *   **冻结快照**，写入通道是内部 symbol（只有 Loader 能提交），插件侧拿不到。
- *   所以模型目录变化时只能 dispose 旧 fiber、用新配置再挂一次。
- *   路由注册本身是原子的，失败时旧路由集合仍然可用。
+ * 首选路径是 ./registry（把 provider 写进现有 llm-pi-ai 条目的 settings 通道），
+ * 本模块是**兜底**：仅当 profile 里没有可写的 pi-ai 条目时，才自己挂一个实例。
+ *
+ * 注意自挂的限制：同一个 pi-ai 不能挂两次。它的 apply() 会
+ * registerConfigurableProviders()，entries 含整张内置目录（42 条），
+ * 该注册全有或全无；profile 里已有 llm-pi-ai 条目时第二个实例必然整体失败。
+ *
+ * 目录变化时的做法是 dispose 旧 fiber 再用新配置挂一次（providers 是 volatile
+ * 字段且写入通道只对 Loader 开放，插件侧无法原地改），路由注册本身是原子的。
  */
-import type { RelayModel } from '../shared/types';
+import { DEFAULT_API, type RelayApi, type RelayModel } from '../shared/types';
 
-export type RelayApi = 'openai-completions' | 'anthropic-messages';
+export type { RelayApi };
 
 export interface ProviderOptions {
   /** pi-ai 路由名（GenerateOptions.provider）*/
@@ -20,7 +24,7 @@ export interface ProviderOptions {
   baseURL: string;
   /** 凭据引用名，交给 pi-ai 走 harness 凭据链解析 */
   apiKeyRef: string;
-  /** 协议：OpenAI 兼容（new-api / sub2api 等）或 Anthropic 兼容 */
+  /** 线路协议：openai-responses | openai-completions | anthropic-messages */
   api?: RelayApi;
   models: RelayModel[];
   defaultContextWindow: number;
@@ -86,7 +90,7 @@ export function pickPlugin(adapter: any, specifier = DEFAULT_ADAPTER): any {
  *   - OpenAI 协议：缺 `/v1` 自动补，已有则不重复补
  *   - Anthropic 协议：多余的 `/v1` 自动剥掉
  */
-export function normalizeBaseURLForApi(baseURL: string, api: RelayApi = 'openai-completions'): string {
+export function normalizeBaseURLForApi(baseURL: string, api: RelayApi = DEFAULT_API): string {
   let trimmed = baseURL.trim().replace(/\/+$/, '');
   if (!trimmed) return '';
 
@@ -95,9 +99,13 @@ export function normalizeBaseURLForApi(baseURL: string, api: RelayApi = 'openai-
     return trimmed.replace(/\/v1$/i, '');
   }
 
+  // OpenAI 系（completions 与 responses）由 SDK 拼 /v1/... 之外的路径，
+  // 所以 baseURL 必须以 /v1 结尾。用户若整段粘贴完整端点，先剥回站点根。
   trimmed = trimmed
     .replace(/\/v1\/chat\/completions$/i, '')
+    .replace(/\/v1\/responses$/i, '')
     .replace(/\/chat\/completions$/i, '')
+    .replace(/\/responses$/i, '')
     .replace(/\/completions$/i, '');
   return /\/v1$/i.test(trimmed) ? trimmed : trimmed + '/v1';
 }
@@ -111,8 +119,8 @@ export function completionsBaseURL(baseURL: string): string {
 export function buildProfile(opts: ProviderOptions): Record<string, unknown> {
   return {
     displayName: opts.displayName,
-    api: opts.api ?? 'openai-completions',
-    baseURL: normalizeBaseURLForApi(opts.baseURL, opts.api ?? 'openai-completions'),
+    api: opts.api ?? DEFAULT_API,
+    baseURL: normalizeBaseURLForApi(opts.baseURL, opts.api ?? DEFAULT_API),
     apiKeyEnv: opts.apiKeyRef,
     defaultContextWindow: opts.defaultContextWindow,
     defaultMaxTokens: opts.defaultMaxTokens,

@@ -29,7 +29,9 @@ export function apiRoot(baseURL: string): string {
   // 先剥掉用户可能整段粘贴的端点路径
   trimmed = trimmed
     .replace(/\/v1\/chat\/completions$/i, '')
+    .replace(/\/v1\/responses$/i, '')
     .replace(/\/chat\/completions$/i, '')
+    .replace(/\/responses$/i, '')
     .replace(/\/v1\/messages$/i, '')
     .replace(/\/messages$/i, '')
     .replace(/\/completions$/i, '');

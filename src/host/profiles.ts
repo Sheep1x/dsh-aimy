@@ -5,17 +5,19 @@
  *   - aimy：内置预设（本站中转站）。URL 固化在代码/配置里，界面上不展示、不可编辑。
  *   - compat：兼容模式，用户自己填 URL + 协议（new-api / sub2api / 任意 OpenAI 兼容网关）。
  *
+ * 协议支持三种（与 pi-ai 的 supportedProtocols() 一致）：
+ *   openai-responses（默认）/ openai-completions / anthropic-messages。
+ *
  * 密钥都走 DSH 凭据库，按档案各用各的引用名，互不覆盖。
  * 兼容模式只把「非密钥」的地址与协议落盘（profiles.json）。
  */
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 
+import { DEFAULT_API, type RelayApi } from '../shared/types';
 import { resolveDshHome } from './state';
 
 export type ProfileId = 'aimy' | 'compat';
-
-export type RelayApi = 'openai-completions' | 'anthropic-messages';
 
 export interface ProfileConfig {
   id: ProfileId;
@@ -94,8 +96,25 @@ export class ProfileSettingsStore {
   }
 }
 
+/**
+ * 把任意输入归到三种受支持协议之一。
+ *
+ * 取值必须与 @deepseek-ai/dsh-llm-pi-ai 的 supportedProtocols() 完全一致，
+ * 否则 pi-ai 的 Config 校验会报 "names api ..., which this build cannot serve"。
+ * 未识别时退回 DEFAULT_API（Responses），而不是旧实现那样一律塞进 completions。
+ */
 export function normalizeApi(value: unknown): RelayApi {
-  return value === 'anthropic-messages' ? 'anthropic-messages' : 'openai-completions';
+  if (value === 'openai-responses' || value === 'openai-completions' || value === 'anthropic-messages') {
+    return value;
+  }
+  // 兼容旧写法 / 常见别名
+  if (typeof value === 'string') {
+    const v = value.trim().toLowerCase();
+    if (v === 'responses' || v === 'openai-response' || v === 'openai_responses') return 'openai-responses';
+    if (v === 'completions' || v === 'chat-completions' || v === 'openai' || v === 'openai-chat') return 'openai-completions';
+    if (v === 'anthropic' || v === 'messages' || v === 'claude') return 'anthropic-messages';
+  }
+  return DEFAULT_API;
 }
 
 export function isProfileId(value: unknown): value is ProfileId {
@@ -145,7 +164,7 @@ export function resolveProfile(input: ResolveProfileInput): ProfileConfig {
     baseURL: compat ? normalizeBaseURL(compat.baseURL) : '',
     apiKeyRef: COMPAT_KEY_REF,
     routeName: 'onehub-compat',
-    api: compat ? normalizeApi(compat.api) : 'openai-completions',
+    api: compat ? normalizeApi(compat.api) : DEFAULT_API,
     preset: false,
     defaultContextWindow: defaults.defaultContextWindow,
     defaultMaxTokens: defaults.defaultMaxTokens,

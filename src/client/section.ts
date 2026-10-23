@@ -5,7 +5,7 @@
  *
  * 样式只用 CSS 变量 --dsw-alias-*（主题跟随亮/暗），不依赖 UI 组件库。
  */
-import type { PluginState, ProfileId } from '../shared/types';
+import { API_OPTIONS, DEFAULT_API, type PluginState, type ProfileId, type RelayApi } from '../shared/types';
 
 export interface SectionDeps {
   h: (type: any, props: any, ...children: any[]) => any;
@@ -218,7 +218,7 @@ export function makeSection(deps: SectionDeps, options: SectionOptions = {}) {
     const [pendingGroup, setPendingGroup] = useState('');
     const [keyInput, setKeyInput] = useState('');
     const [compatURL, setCompatURL] = useState('');
-    const [compatApi, setCompatApi] = useState<'openai-completions' | 'anthropic-messages'>('openai-completions');
+    const [compatApi, setCompatApi] = useState<RelayApi>(DEFAULT_API);
 
     const state = (states[tab] ?? null) as PluginState | null;
 
@@ -506,8 +506,7 @@ export function makeSection(deps: SectionDeps, options: SectionOptions = {}) {
                   value: compatApi,
                   onChange: (e: any) => setCompatApi(e.target.value),
                 },
-                h('option', { value: 'openai-completions' }, 'OpenAI 兼容'),
-                h('option', { value: 'anthropic-messages' }, 'Anthropic 兼容'),
+                ...API_OPTIONS.map((opt) => h('option', { key: opt.value, value: opt.value }, opt.label)),
               ),
               h('button', { style: S.button, disabled: busy, onClick: () => void saveCompat() }, '保存地址'),
               h('button', { style: S.button, disabled: busy, onClick: () => void clearCompat() }, '清除'),

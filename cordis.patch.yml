@@ -21,13 +21,13 @@
         displayName: 'Aimy-艾米'
         # pi-ai 路由名
         routeName: 'onehub'
-        # 协议：openai-completions | anthropic-messages
-        api: 'openai-completions'
+        # 协议：openai-responses（默认）| openai-completions | anthropic-messages
+        api: 'openai-responses'
 
         # ── 兼容模式 ──────────────────────────────────────────────
         # 地址与协议由设置页写入 $DSH_HOME/dsh-aimy/profiles.json，
         # 这里只给默认协议；密钥固定用 ONEHUB_COMPAT_API_KEY
-        compatApi: 'openai-completions'
+        compatApi: 'openai-responses'
 
         # ── 模型能力保守默认 ───────────────────────────────────────
         defaultContextWindow: 131072

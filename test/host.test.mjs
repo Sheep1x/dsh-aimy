@@ -253,7 +253,7 @@ describe('dsh-aimy host routes', () => {
     assert.equal(body.data.preset, true);
     assert.equal(body.data.displayName, 'Aimy-艾米');
     assert.match(body.data.baseURL, /^http:\/\/127\.0\.0\.1:\d+/u, '预设档案的地址应只读展示给前端');
-    assert.equal(body.data.api, 'openai-completions');
+    assert.equal(body.data.api, 'openai-responses', '默认协议应是 OpenAI Responses');
   });
 
   it('模型路由被挂载：providers 里只有本路由且模型齐全', async () => {
@@ -261,7 +261,7 @@ describe('dsh-aimy host routes', () => {
     const mount = adapter.mounts.find((m) => m && m.onehub);
     assert.ok(mount, '适配器没有被挂载');
     const profile = mount.onehub;
-    assert.equal(profile.api, 'openai-completions');
+    assert.equal(profile.api, 'openai-responses', '挂载时默认协议应是 OpenAI Responses');
     assert.match(profile.baseURL, /\/v1$/);
     assert.equal(profile.apiKeyEnv, 'ONEHUB_API_KEY');
     assert.deepEqual(profile.models.map((m) => m.id), ['model-a', 'model-b']);
@@ -630,6 +630,31 @@ describe('baseURL 归整（OpenAI 补 /v1，Anthropic 不带 /v1）', () => {
   it('Anthropic 协议：域名原样保留', async () => {
     const profile = await profileFor(relayBase, 'anthropic-messages');
     assert.equal(profile.baseURL, relayBase);
+  });
+
+  it('OpenAI Responses：没填 /v1 时自动补', async () => {
+    const profile = await profileFor(relayBase, 'openai-responses');
+    assert.equal(profile.baseURL, relayBase + '/v1');
+    assert.equal(profile.api, 'openai-responses', '协议必须原样透传给 pi-ai');
+  });
+
+  it('OpenAI Responses：已填 /v1 时不重复拼接', async () => {
+    const profile = await profileFor(relayBase + '/v1', 'openai-responses');
+    assert.equal(profile.baseURL, relayBase + '/v1');
+  });
+
+  it('OpenAI Responses：误填完整端点会被剥回到 /v1', async () => {
+    const profile = await profileFor(relayBase + '/v1/responses', 'openai-responses');
+    assert.equal(profile.baseURL, relayBase + '/v1');
+  });
+
+  it('三种协议都能挂载，api 原样透传', async () => {
+    for (const api of ['openai-responses', 'openai-completions', 'anthropic-messages']) {
+      const profile = await profileFor(relayBase, api);
+      assert.equal(profile.api, api, api + ' 应原样透传');
+      // anthropic 不带 /v1，两个 OpenAI 系都带
+      assert.equal(profile.baseURL, api === 'anthropic-messages' ? relayBase : relayBase + '/v1', api + ' 的 baseURL 归整错误');
+    }
   });
 });
 

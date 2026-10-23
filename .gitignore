@@ -1,7 +1,10 @@
 node_modules/
-# 构建产物：npm run build 生成（prepack 会在发布前自动构建）
-lib/
+# 构建产物 lib/ **要提交**：从源码安装（dsh plugin add / pnpm add github:…）不会执行
+# prepare/prepack，没有 lib/ 的包主入口 lib/index.js 不存在，装上也用不了。
+# 改动构建产物后请 commit，否则用户拿到的是旧代码。
 # gh CLI 残留
 .local/
 *.log
 *.tgz
+# 工具链未展开 %SystemDrive% 时漏下来的 Windows 缓存，绝不入库
+%SystemDrive%/

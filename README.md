@@ -1,8 +1,23 @@
+<img src="assets/icon-180.png" width="72" align="right" alt="dsh-Aimy">
+
 # dsh-Aimy
 
 DSH（DeepSeek Harness）插件 **dsh-Aimy**：把本站中转站（one-hub）作为模型来源，并且**在插件里切换分组时真实切换中转站的分组**——模型列表、候选渠道、计费倍率同时变化。
 
 配合的中转站接口：`GET/PUT /v1/token/group`（见 [../docs/dsh-aimy.md](../docs/dsh-aimy.md)）。
+
+## 两个入口
+
+| 入口 | 插槽 | 说明 |
+|---|---|---|
+| 设置页「**Aimy-艾米**」分区 | `settings.section`（order 40） | 紧凑版，限宽 720 |
+| 首页左侧栏图标 + 主区面板「**Aimy-艾米**」 | `sidebar.panellist`（order 30）+ `main`（key `dsh-aimy`） | 整页面板，撑满主区、自带滚动 |
+
+- 两处共用同一个 `makeSection()`，只是 `variant` 不同（`settings` / `panel`）。
+- 侧栏图标是内联 SVG（`RelayIcon`），走 `currentColor`，跟随主题与选中态，不依赖 UI 组件库。
+- 面板 id、`main` 的 key、包名一致，都是 `dsh-aimy`；sidebar 点图标时把 `activePanelId` 设成该 id，`main` 据此命中。
+- 三条注册都在 `src/client/app.ts` 的 `apply()` 里，`inject = ['slots']`。
+- client 侧必须用 `react.createElement`（可变 children）；`react/jsx-runtime` 的 `jsx(type, props, key)` 第三参是 key，会把 `h(type, props, ...children)` 的子节点全部丢掉。
 
 ## 状态
 
@@ -22,10 +37,17 @@ cd ~/.dsh/profiles/desktop
 pnpm add github:Sheep1x/dsh-aimy      # 或 npm i github:Sheep1x/dsh-aimy
 ```
 
-装完 npm 会自动跑 `prepare` 生成 `lib/`（仓库不提交构建产物）。
 然后在 profile 的 `package.json` 里把 `dsh-aimy` 加进 `dsh.profile.bundles`。
 
+> **前置条件**：本机要有 `git`（pnpm 的 `github:` 依赖靠它取包），且能访问 GitHub。
+>
+> 仓库**提交了构建产物 `lib/`**，所以源码安装（`dsh plugin add` / `pnpm add github:…` / `file:`）拿到的就是可直接加载的包，
+> 不依赖 `prepare` 在装机时构建（`file:` 与 `dsh plugin add` 都不会跑 `prepare`）。
+> 改完源码请 `node build.mjs` 并**一起提交 `lib/`**，否则用户装到的是旧代码。
+
 ### 方式二：本地路径
+
+先把源码构建出 `lib/`，再装：
 
 ```bash
 pnpm add file:D:/openwork/dsh-aimy
@@ -36,10 +58,19 @@ git clone https://github.com/Sheep1x/dsh-aimy.git
 cd dsh-aimy
 npm install        # 装 esbuild 等构建依赖
 npm run build      # 产出 lib/index.js 与 lib/client.js
-npm test           # 27 项集成测试
+npm test           # 31 项测试（host 27 + client 4）
 ```
 
-然后在 DSH profile 里 `pnpm add file:<本目录绝对路径>`，并把 `dsh-aimy` 加进 `dsh.profile.bundles`。
+然后在 DSH profile 里装本地目录，并把 `dsh-aimy` 加进 `dsh.profile.bundles`（`~/.dsh/profiles/<profile>/package.json`）。
+
+```bash
+cd ~/.dsh/profiles/desktop
+pnpm add link:D:/openwork/dsh-aimy      # 软链：build 完重启即生效
+# 或 pnpm add file:D:/openwork/dsh-aimy  # 快照：改完要 pnpm install --force
+```
+
+> `link:` 只在 `node_modules/dsh-aimy` 建一条软链；`file:` 会按 `files` 字段打快照，源码变动 pnpm 未必自动刷新。
+> 两种方式下 peer（`@deepseek-ai/*`）都由 DSH 的 profile 解析器按包名路由，不依赖本目录的 `node_modules`。
 
 ## 安装（本地开发）
 
@@ -67,7 +98,7 @@ pnpm add file:D:/openwork/one-hub/dsh-aimy
 
 | Tab | 地址 | 密钥引用 | 路由名 | 显示名 | 能力 |
 |---|---|---|---|---|---|
-| **Aimy-艾米**（默认） | 内置 `https://aimy.sheep1x.top`，**界面不展示、不可编辑** | `ONEHUB_API_KEY` | `onehub` | Aimy-艾米 | 读模型 + 真实切分组 |
+| **Aimy-艾米**（默认） | 内置 `https://aimy.sheep1x.top`，**界面只读展示、不可编辑** | `ONEHUB_API_KEY` | `onehub` | Aimy-艾米 | 读模型 + 真实切分组 |
 | **兼容模式** | 用户自填（写入 `$DSH_HOME/dsh-aimy/profiles.json`） | `ONEHUB_COMPAT_API_KEY` | `onehub-compat` | 兼容模式 | 读模型 + 调用；分组接口缺失时自动只读 |
 
 - 两个档案**互相独立**：各自挂各自的 pi-ai 路由，模型选择器里按显示名区分，切 Tab 只是切配置页。
@@ -119,10 +150,18 @@ host 半侧在 `/dsh-aimy-relay` 前缀下暴露（仅供本插件的浏览器�
 ## 测试
 
 ```bash
-"C:/Program Files/nodejs/node.exe" --test test/host.test.mjs
+"C:/Program Files/nodejs/node.exe" --test test/*.test.mjs
 ```
 
-覆盖（27 项）：正常读取 / 真实切组 / 模型路由挂载 / 切组后重挂载 / 同分组不重挂载 / 中转站报错透传 /
+
+- `test/host.test.mjs`：host 路由与挂载（假中转站 + 假 cordis ctx）
+- `test/client.test.mjs`：client 半侧（走 `window.__ModuleLoader__` 契约，假 hooks 渲染真 React 元素树）
+  - 三条注册齐全、侧栏 id 必须等于 `main` 的 key
+  - 侧栏图标是 svg 且跟随 `size`/`active`
+  - 面板展示默认地址并标注「预设地址（不可修改）」
+  - 点地址 → 写剪贴板 → 提示「已复制」
+
+host 覆盖（27 项）：正常读取 / 真实切组 / 模型路由挂载 / 切组后重挂载 / 同分组不重挂载 / 中转站报错透传 /
 空分组拦截 / 旧版站点降级 / 未配置密钥 / 保存密钥后自动挂载 / 空密钥拒绝 / 清除密钥 /
 模型失效判定（在目录内 / 切走后失效 / 切回恢复 / 指向别的路由不误报）。
 
@@ -166,6 +205,25 @@ src/
 **绝不自动改选模型**——静默替换会让用户在不知情的情况下换了计费对象。
 
 若选择指向其它路由（不是本插件的 `routeName`），不算失效。
+
+## 模型怎么进入 DSH 的模型选择器
+
+挂载 = 把官方 `@deepseek-ai/dsh-llm-pi-ai` 作为**子插件**注册进本插件 fiber，它会调用 `ctx.llm`
+把 `{ routeName, displayName, models }` 声明成一个 provider 路由；模型选择器读的就是这份声明。
+
+两个关键点（都踩过坑）：
+
+1. **挂的是模块命名空间，不是 `PiAiAdapter` 类。**
+   真包导出 `export { Config, PiAiAdapter, apply, inject, name, … }`，其中 `PiAiAdapter`
+   是 `class extends LlmAdapter` 的**适配器实现类**，没有 `apply`。把它传给 `ctx.plugin()`
+   不会报错，但什么 provider 都不会注册 → 面板一切正常、模型选择器里一个模型都没有。
+   `pickPlugin()` 因此优先挑「带 `apply` 的对象/函数插件」，只给类时直接抛错。
+
+2. **启动就要挂，不能等面板被打开。**
+   之前只有 `/state`、`/refresh` 里才 `syncProvider`，所以模型要等用户点开「中转站」面板才出现。
+   现在 `apply()` 结束时用 `$DSH_HOME/dsh-aimy/state.json` 里缓存的目录做一次 `warmStart()`：
+   冷启动立刻挂上（分组信息要联网才知道，预热用最近一次目录即可，面板刷新后按真实分组重挂）。
+   缓存命中的 `/state` 分支也会补一次 `syncProvider`，避免「进程起来了但路由没挂」。
 
 ## 模型路由怎么挂上的
 

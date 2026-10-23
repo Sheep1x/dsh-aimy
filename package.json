@@ -22,7 +22,8 @@
   "license": "MIT",
   "scripts": {
     "build": "node build.mjs",
-    "test": "node --test test/*.test.mjs"
+    "test": "node --test test/*.test.mjs",
+    "prepack": "node build.mjs"
   },
   "dsh": {
     "bundle": {
@@ -57,5 +58,22 @@
       "optional": true
     }
   },
-  "displayName": "dsh-Aimy"
+  "displayName": "dsh-Aimy",
+  "engines": {
+    "node": ">=20"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Sheep1x/dsh-aimy.git"
+  },
+  "homepage": "https://github.com/Sheep1x/dsh-aimy",
+  "keywords": [
+    "dsh",
+    "deepseek-harness",
+    "plugin",
+    "one-hub",
+    "relay",
+    "new-api",
+    "sub2api"
+  ]
 }

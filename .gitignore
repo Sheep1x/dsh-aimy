@@ -1,5 +1,7 @@
 node_modules/
-# 构建产物：npm run build 生成；不入库（npm 发布时用 prepack 触发构建）
+# 构建产物：npm run build 生成（prepack 会在发布前自动构建）
 lib/
+# gh CLI 残留
+.local/
 *.log
 *.tgz

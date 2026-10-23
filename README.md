@@ -13,6 +13,18 @@ DSH（DeepSeek Harness）插件 **dsh-Aimy**：把本站中转站（one-hub）�
 - ✅ 双档案：Aimy-艾米（地址隐藏的预设）+ 兼容模式（自填 URL/协议，适配 new-api / sub2api）
 - ⏳ 可选：插件市场打包（index 格式 + submission 校验）
 
+## 安装
+
+```bash
+git clone https://github.com/Sheep1x/dsh-aimy.git
+cd dsh-aimy
+npm install        # 装 esbuild 等构建依赖
+npm run build      # 产出 lib/index.js 与 lib/client.js
+npm test           # 27 项集成测试
+```
+
+然后在 DSH profile 里 `pnpm add file:<本目录绝对路径>`，并把 `dsh-aimy` 加进 `dsh.profile.bundles`。
+
 ## 安装（本地开发）
 
 ```bash

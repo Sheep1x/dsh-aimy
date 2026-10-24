@@ -23,6 +23,8 @@ export interface RouteDeps {
   credential?: CredentialStatus | null;
   /** 当前默认模型选择（由入口从 agentDefaultModel 读取）*/
   selection?: ModelSelection | null;
+  /** 切组专用：强制重挂（不复用模型集合短路），确保目录与新分组一致 */
+  remountProvider?: (models: import('../shared/types').RelayModel[]) => Promise<{ ok: boolean; error?: string }>;
   /** 目录变化后同步给 provider（挂载或重挂载）；失败只记录不抛 */
   syncProvider?: (models: import('../shared/types').RelayModel[]) => Promise<{ ok: boolean; error?: string }>;
   fetchImpl?: typeof fetch;
@@ -168,7 +170,11 @@ export async function switchGroup(deps: RouteDeps, group: string): Promise<Route
     state.models = models;
     state.modelsFetchedAt = fetchedAt;
 
-    const synced = await deps.syncProvider?.(models);
+    // 切组后模型集合可能整体换掉，必须强制重挂：syncProvider 会用模型集合
+    // 相同来短路，而这里需要的是「把旧目录彻底换掉」。
+    const synced = deps.remountProvider
+      ? await deps.remountProvider(models)
+      : await deps.syncProvider?.(models);
     if (synced && !synced.ok) {
       warning = '分组已切换，但模型路由更新失败：' + (synced.error ?? '未知错误');
     }

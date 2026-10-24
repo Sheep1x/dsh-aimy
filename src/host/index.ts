@@ -12,7 +12,7 @@
  */
 import type { IncomingMessage, ServerResponse } from 'node:http';
 
-import { createProviderMount, normalizeBaseURLForApi, type ProviderMount } from './provider';
+import { createProviderMount, normalizeBaseURLForApi, sameModels, type ProviderMount } from './provider';
 import {
   AIMY_DEFAULT_BASE_URL,
   AIMY_DEFAULT_DISPLAY_NAME,
@@ -26,6 +26,7 @@ import {
   type ProfileId,
   type RelayApi,
 } from './profiles';
+import { DEFAULT_REASONING_EFFORT } from '../shared/model-profile';
 import { removeProviderViaSettings, setDefaultReasoningEffort, writeProviderViaSettings } from './registry';
 import { CatalogStore } from './state';
 import { describeError, readState, switchGroup, type RouteDeps } from './routes';
@@ -356,7 +357,11 @@ export function apply(ctx: any, config?: Config): void {
   };
 
   /** 目录变化 → 首次挂载 / 重挂载该档案的模型路由。失败只记录。 */
+  /** 每个档案最近一次成功同步的模型集合，供 remountProvider 判断是否真的需要重挂。 */
+  const lastSyncedModels = new Map<string, RelayModel[]>();
+
   const syncProvider = async (profile: ProfileConfig, models: RelayModel[]): Promise<{ ok: boolean; error?: string }> => {
+    lastSyncedModels.set(profile.id, models);
     if (!profile.baseURL) {
       return { ok: false, error: '该档案还没配置地址' };
     }
@@ -445,6 +450,37 @@ export function apply(ctx: any, config?: Config): void {
     }
   };
 
+  /**
+   * 切组后的强制重挂：不复用 sameModels 短路。
+   *
+   * 为什么需要单独一条：切组只改站点的计费分组，模型集合可能整体换掉
+   * （例如 DeepSeek 分组 ↔ GPT 分组），但插件挂的目录还是旧的，
+   * 选择器里就会留着新分组里不存在的模型，调用必然失败。
+   * 这里先卸掉已有挂载再按新目录重建，确保目录与分组一致。
+   */
+  const remountProvider = async (
+    profile: ProfileConfig,
+    models: RelayModel[],
+  ): Promise<{ ok: boolean; error?: string }> => {
+    // 模型集合没变就不动：无谓重挂会打断正在进行的对话。
+    // 切到同一分组时走这条路，保持原有「短路」语义。
+    const previous = lastSyncedModels.get(profile.id);
+    if (previous && sameModels(previous, models)) {
+      return syncProvider(profile, models);
+    }
+    // 集合变了：先删 settings 里的旧 provider，避免旧模型残留在目录里
+    await removeProviderViaSettings(ctx, {
+      settingsNs: readConfig(config).settingsNs ?? DEFAULT_SETTINGS_NS,
+      routeName: profile.routeName,
+    });
+    const existing = mounts.get(profile.id);
+    if (existing) {
+      try { await existing.dispose(); } catch {}
+      mounts.delete(profile.id);
+    }
+    return syncProvider(profile, models);
+  };
+
   const buildDeps = async (profile: ProfileConfig): Promise<RouteDeps> => {
     const cfg = readConfig(config);
     const inline = profile.preset ? cfg.apiKey : undefined;
@@ -456,6 +492,7 @@ export function apply(ctx: any, config?: Config): void {
       store: catalogs,
       provider: mounts.get(profile.id) ?? settingsMountShim(profile.id),
       syncProvider: (models) => syncProvider(profile, models),
+      remountProvider: (models) => remountProvider(profile, models),
       credential: await describeCredential(ctx, profile.apiKeyRef),
       selection: readSelection(ctx),
     };
@@ -682,19 +719,63 @@ export function apply(ctx: any, config?: Config): void {
             if (method === 'POST' && route === '/switch') {
               const payload = parseJson(await readBody(req));
               const group = String(payload?.group ?? '');
-              const result = await switchGroup(deps, group);
-              const body = result.body as {
+              // 切组会把站点的模型集合整体换掉，必须先强制重挂、让目录与新分组对齐。
+              const switched = await switchGroup(deps, group);
+              const body = switched.body as {
                 data?: { state?: Record<string, any>; warning?: string };
               };
+              const warnings: string[] = [];
+              if (body?.data?.warning) warnings.push(body.data.warning);
+
               if (body?.data?.state) {
-                withProvider(decorate(body.data.state, profile), profile);
-                if (body.data.state.staleModel) {
-                  const kept = body.data.state.selection?.model ?? '当前模型';
-                  const stale = '分组已切换，但当前选中的模型 ' + kept + ' 不在新分组里，请重新选择模型';
-                  body.data.warning = body.data.warning ? body.data.warning + '；' + stale : stale;
+                const state = body.data.state as Record<string, any>;
+                // 先回填最新挂载句柄：state.provider 是 switchGroup 构建时的快照，
+                // 此时可能还是 null，用它判断「是否挂载成功」会得到假值。
+                withProvider(decorate(state, profile), profile);
+                const mountedNow = Boolean(state.provider && state.provider.mounted !== false);
+
+                // 当前选中的模型不在新分组目录里 —— 这正是「切组后无法对话」的原因：
+                // 模型名对不上，请求必然被站点拒绝。用户主动切组时改选是预期行为，
+                // 但必须明确告知改选结果。
+                const selModel = state.selection?.model;
+                const staleNow = mountedNow
+                  && typeof selModel === 'string'
+                  && Array.isArray(state.models)
+                  && state.models.length > 0
+                  && !state.models.some((m: any) => m.id === selModel);
+                state.staleModel = staleNow;
+
+                if (staleNow) {
+                  const next = state.models[0].id as string;
+                  let switchedModel = false;
+                  try {
+                    const agentDefault = typeof ctx.get === 'function'
+                      ? (ctx.get('agentDefaultModel', false) as any)
+                      : undefined;
+                    if (agentDefault && typeof agentDefault.saveSelection === 'function') {
+                      await agentDefault.saveSelection({
+                        provider: profile.routeName,
+                        model: next,
+                        reasoningEffort: DEFAULT_REASONING_EFFORT,
+                      });
+                      state.selection = { provider: profile.routeName, model: next };
+                      state.staleModel = false;
+                      switchedModel = true;
+                    }
+                  } catch {
+                    switchedModel = false;
+                  }
+                  warnings.push(
+                    switchedModel
+                      ? '「' + selModel + '」不在新分组里，已切换到「' + next + '」'
+                      : '分组已切换，但「' + selModel + '」不在新分组里，请重新选择模型',
+                  );
                 }
               }
-              sendJson(res, result.status, result.body);
+              if (warnings.length > 0) {
+                (body.data as any).warning = warnings.join('；');
+              }
+              sendJson(res, switched.status, switched.body);
               return;
             }
 

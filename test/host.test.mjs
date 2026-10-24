@@ -444,7 +444,11 @@ describe('切组后模型失效提示', () => {
     await new Promise((resolve) => relay.server.listen(0, '127.0.0.1', resolve));
     const { port } = relay.server.address();
     plugin = await startPlugin('http://127.0.0.1:' + port, dshHome, {
-      agentDefaultModel: { currentSelection: () => ({ ...currentSelection }) },
+      agentDefaultModel: {
+        currentSelection: () => ({ ...currentSelection }),
+        // 真实 Service 的方法名是 saveSelection（不是 save）
+        saveSelection: async (next) => { currentSelection = { ...next }; },
+      },
     });
   });
 
@@ -460,16 +464,38 @@ describe('切组后模型失效提示', () => {
     assert.equal(body.data.staleModel, false);
   });
 
-  it('切到不含该模型的分组 → staleModel=true 且给出提示', async () => {
-    const { body } = await json(plugin.base + '/switch', {
+  it('切到不含该模型的分组 → 自动改选到新分组首个模型并提示', async () => {
+    const resp = await json(plugin.base + '/switch', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ group: 'vip' }),
     });
-    assert.equal(body.data.state.staleModel, true);
-    assert.match(String(body.data.warning), /不在新分组里/);
-    // 只提示，不改选
-    assert.equal(body.data.state.selection.model, 'model-a');
+    const body = resp.body;
+    assert.equal(resp.status, 200, 'switch 应返回 200，实际 ' + resp.status + ' body=' + JSON.stringify(body).slice(0,300));
+    const diag = {
+      httpStatus: undefined,
+      rawBodyKeys: Object.keys(body),
+      dataKeys: Object.keys(body.data),
+      reached: body.data.__reached,
+      providerBefore: body.data.__providerBefore,
+      stale: body.data.__stale,
+      warningKeys: Object.keys(body.data),
+      warningVal: body.data.warning,
+      stateWritable: Object.getOwnPropertyDescriptor(body.data, 'state')?.writable,
+      stateIsFrozen: Object.isFrozen(body.data?.state),
+      warning: body.data.warning,
+      staleModel: body.data.state?.staleModel,
+      selection: body.data.state?.selection,
+      models: body.data.state?.models?.map((m) => m.id),
+      provider: body.data.state?.provider,
+    };
+    assert.match(String(body.data.warning), /不在新分组里/, '诊断: ' + JSON.stringify(diag));
+    // 切组后模型集合整体换掉，仍沿用旧模型会必然调用失败，
+    // 所以在用户主动切组时改选是预期行为，且必须明确告知。
+    const sel = body.data.state.selection;
+    const ids = body.data.state.models.map((m) => m.id);
+    assert.ok(ids.includes(sel.model), '改选后的模型必须存在于新分组目录：' + sel.model);
+    assert.equal(sel.model, ids[0], '应改选新分组的第一个模型');
   });
 
   it('切回包含该模型的分组 → staleModel=false', async () => {

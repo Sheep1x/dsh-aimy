@@ -82,6 +82,8 @@ export interface PluginState {
   preset: boolean;
   /** 与 @deepseek-ai/dsh-llm-pi-ai 的 supportedProtocols() 一致 */
   api: RelayApi;
+  /** 是否给模型声明图片输入（面板开关，默认开）*/
+  imageInput: boolean;
   /** 兼容模式是否已填地址 */
   configured: boolean;
   connected: boolean;
@@ -111,6 +113,7 @@ export function emptyState(baseURL: string, overrides: Partial<PluginState> = {}
     displayName: '',
     preset: false,
     api: DEFAULT_API,
+    imageInput: true,
     configured: true,
     ...overrides,
     baseURL,

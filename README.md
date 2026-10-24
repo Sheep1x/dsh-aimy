@@ -313,13 +313,23 @@ ctx.plugin(PiAiAdapter, {
       api: 'openai-responses',
       baseURL: 'https://你的站点/v1',
       apiKeyEnv: 'ONEHUB_API_KEY',
-      defaultContextWindow: 131072,
+      defaultContextWindow: 1000000,
       defaultMaxTokens: 8192,
-      models: [{ id: 'deepseek-v4.1-flash' }, ...],   // 来自 GET /v1/models
+      models: [{ id: 'deepseek-v4.1-flash', contextWindow: 1000000, input: ['text', 'image'] }, ...],   // 来自 GET /v1/models
     },
   },
 })
 ```
+
+**为什么每个模型都要写明 `contextWindow` 与 `input`**：pi-ai 的解析顺序是
+`entry.contextWindow ?? 目录值 ?? provider.defaultContextWindow`，`input` 则是
+`declaredInput(entry.input) ?? provider.defaultInput`（`declaredInput` 对**缺省和空数组**都返回
+undefined）。所以只写 provider 级默认值时，模型在选择器里会显示成默认的小窗口、模态退化成纯文本。
+本插件统一给每个模型打上 `contextWindow: 1000000` 和 `input: ['text','image']`，
+provider 级再兜一层 `defaultInput`。注意这不只是标签：`dsh-compaction-basic` 的压缩阈值、
+溢出判定、用量压力百分比都是拿 `contextWindow` 算的，131072 → 1000000 会让压缩推迟约 7.6 倍。
+图片模态由面板上的「图片输入」开关控制（默认开），关掉后模型只声明 `text`，
+贴图会在附件阶段就被拒绝，而不是等上游在整轮中途报错。
 
 **为什么切组要重挂载**：pi-ai 的 `providers` 是 schemastery 的 volatile 字段，但
 `createVolatile()` 返回的是**冻结快照**，写入通道是内部 symbol（只有 Loader 能提交），

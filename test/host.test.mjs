@@ -283,9 +283,18 @@ describe('dsh-aimy host routes', () => {
         assert.equal(typeof wire, 'string', 'reasoningEfforts.' + lv + ' 必须是线路值');
         assert.ok(wire.length > 0, 'reasoningEfforts.' + lv + ' 不能为空串');
       }
+      // 上下文窗口必须逐模型声明：解析顺序是
+      // entry.contextWindow ?? 目录值 ?? provider.defaultContextWindow，
+      // 漏写就让 provider 级默认值顶上来（界面会显示成小窗口）。
+      assert.equal(m.contextWindow, 1000000, '每个 model 必须声明 1M 上下文窗口：' + JSON.stringify(m));
+      // 输入模态：declaredInput() 对「缺省」和「空数组」都返回 undefined，
+      // 必须写非空数组，否则模态退化成 provider 默认的纯文本。
+      assert.deepEqual(m.input, ['text', 'image'], '每个 model 必须声明文本 + 图片输入：' + JSON.stringify(m));
     }
-    assert.equal(profile.defaultContextWindow, 131072);
+    assert.equal(profile.defaultContextWindow, 1000000);
     assert.equal(profile.defaultMaxTokens, 8192);
+    // provider 级兜底：某个模型的 input 若被写成空数组，会回落到这里
+    assert.deepEqual(profile.defaultInput, ['text', 'image']);
   });
 
   it('切组后模型路由被重挂载（先 dispose 再挂新目录）', async () => {
@@ -1176,8 +1185,8 @@ describe('兼容性边界（README 与投稿描述所作的承诺）', () => {
 });
 
 
-describe('模型能力声明（cost / 思考档位）', () => {
-  it('插件写入 settings 的 provider 含 cost 与四档 reasoningEfforts', async () => {
+describe('模型能力声明（上下文 / 模态 / cost / 思考档位）', () => {
+  it('插件写入 settings 的 provider 含 1M 上下文、文本+图片模态、cost 与四档 reasoningEfforts', async () => {
     const dshHome = mkdtempSync(join(tmpdir(), 'dsh-aimy-effort-'));
     const relay = makeRelay({ supportsSwitch: false });
     await new Promise((r) => relay.server.listen(0, '127.0.0.1', r));
@@ -1197,8 +1206,12 @@ describe('模型能力声明（cost / 思考档位）', () => {
 
       const w = written.find((x) => x.patch?.providers?.onehub);
       assert.ok(w, '应写入 providers.onehub');
-      const models = w.patch.providers.onehub.models;
+      const provider = w.patch.providers.onehub;
+      const models = provider.models;
       assert.ok(Array.isArray(models) && models.length > 0);
+
+      assert.equal(provider.defaultContextWindow, 1000000, '写入的 provider 默认窗口也应是 1M');
+      assert.deepEqual(provider.defaultInput, ['text', 'image'], 'provider 级 defaultInput 应兜底为文本 + 图片');
 
       for (const m of models) {
         assert.ok(m.cost, 'model 必须带 cost：' + JSON.stringify(m));
@@ -1207,7 +1220,58 @@ describe('模型能力声明（cost / 思考档位）', () => {
         for (const lv of ['low', 'medium', 'high']) {
           assert.equal(m.reasoningEfforts[lv], lv, lv + ' 档应映射到同名线路值');
         }
+        // 模型选择器/用量表读的就是这两个字段；缺 contextWindow 会被
+        // provider 默认值（或 262144 运行时兜底）顶掉，缺 input 则退化成纯文本。
+        assert.equal(m.contextWindow, 1000000, 'settings 写入的 model 必须带 1M contextWindow：' + JSON.stringify(m));
+        assert.deepEqual(m.input, ['text', 'image'], 'settings 写入的 model 必须声明文本 + 图片：' + JSON.stringify(m));
       }
+    } finally {
+      await new Promise((r) => relay.server.close(r));
+      rmSync(dshHome, { recursive: true, force: true });
+    }
+  });
+
+  it('关掉图片开关后模型只声明 text，并落盘到 profiles.json', async () => {
+    const dshHome = mkdtempSync(join(tmpdir(), 'dsh-aimy-image-'));
+    const relay = makeRelay({ supportsSwitch: false });
+    await new Promise((r) => relay.server.listen(0, '127.0.0.1', r));
+    const baseURL = 'http://127.0.0.1:' + relay.server.address().port;
+
+    const written = [];
+    const settings = {
+      describe: () => [{ ns: 'llm-pi-ai', revision: 1 }],
+      async update(ns, patch) { written.push({ ns, patch }); },
+      async mutate() {},
+    };
+    const llm = { listProviders: () => [{ id: 'onehub' }], listModels: async () => [{ id: 'model-a' }] };
+    try {
+      const plugin = await startPlugin(baseURL, dshHome, { settings, llm });
+      // 默认应开着
+      const first = await json(plugin.base + '/state?profile=aimy');
+      assert.equal(first.body.data.imageInput, true, '图片输入默认应开启');
+
+      const off = await json(plugin.base + '/config?profile=aimy', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ imageInput: false }),
+      });
+      assert.equal(off.status, 200);
+      assert.equal(off.body.data.imageInput, false, '响应里的开关状态应已关闭');
+
+      const w = [...written].reverse().find((x) => x.patch?.providers?.onehub);
+      assert.ok(w, '关掉开关后应重新写入 providers.onehub');
+      assert.deepEqual(w.patch.providers.onehub.defaultInput, ['text'], 'provider defaultInput 应只剩 text');
+      for (const m of w.patch.providers.onehub.models) {
+        assert.deepEqual(m.input, ['text'], '关掉后每个 model 只声明 text：' + JSON.stringify(m));
+        assert.equal(m.contextWindow, 1000000, '窗口声明不受图片开关影响');
+      }
+
+      // 落盘：下次冷启动仍然是关的
+      const saved = JSON.parse(readFileSync(join(dshHome, 'dsh-aimy', 'profiles.json'), 'utf8'));
+      assert.equal(saved.aimy.imageInput, false, 'profiles.json 应记住开关');
+      assert.equal(saved.aimy.api, 'openai-responses', '只改开关不该顺手改协议');
+
+      await new Promise((r) => plugin.server.close(r));
     } finally {
       await new Promise((r) => relay.server.close(r));
       rmSync(dshHome, { recursive: true, force: true });

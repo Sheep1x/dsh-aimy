@@ -29,6 +29,10 @@
         # 这里只给默认协议；密钥固定用 ONEHUB_COMPAT_API_KEY
         compatApi: 'openai-responses'
 
-        # ── 模型能力保守默认 ───────────────────────────────────────
-        defaultContextWindow: 131072
+        # ── 模型能力默认 ───────────────────────────────────────────
+        # 中转站 /v1/models 只返回 id，不提供窗口与模态；
+        # 这里统一按 1M 上下文 + 文本/图片输入标注（面板可关图片）。
+        defaultContextWindow: 1000000
         defaultMaxTokens: 8192
+        # 是否给模型声明 image 模态；面板「图片输入」开关会覆盖它并落盘
+        imageInput: true

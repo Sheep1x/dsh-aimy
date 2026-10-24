@@ -31,6 +31,8 @@ export interface ProfileConfig {
   preset: boolean;
   defaultContextWindow: number;
   defaultMaxTokens: number;
+  /** 是否给模型声明图片输入（面板开关，默认开）*/
+  imageInput: boolean;
 }
 
 export const AIMY_DEFAULT_BASE_URL = 'https://aimy.sheep1x.top';
@@ -38,23 +40,28 @@ export const AIMY_DEFAULT_DISPLAY_NAME = 'Aimy-艾米';
 export const COMPAT_DISPLAY_NAME = '兼容模式';
 export const COMPAT_KEY_REF = 'ONEHUB_COMPAT_API_KEY';
 
+/** 图片输入默认开关。中转站的模型普遍能吃图，默认打开。 */
+export const DEFAULT_IMAGE_INPUT = true;
+
 export interface CompatSettings {
   baseURL: string;
   api: RelayApi;
+  /** 未落盘时视为默认值（defaults.imageInput）*/
+  imageInput?: boolean;
 }
 
 interface ProfileFile {
   version: 1;
   compat?: CompatSettings;
-  /** 预设档案只允许覆盖协议（地址固化在配置里）*/
-  aimy?: { api: RelayApi };
+  /** 预设档案只允许覆盖协议与图片开关（地址固化在配置里）*/
+  aimy?: { api?: RelayApi; imageInput?: boolean };
 }
 
 function profilesPath(): string {
   return join(resolveDshHome(), 'dsh-aimy', 'profiles.json');
 }
 
-/** 兼容模式的可编辑设置（地址 + 协议），不含密钥。 */
+/** 兼容模式的可编辑设置（地址 + 协议 + 图片开关），不含密钥。 */
 export class ProfileSettingsStore {
   private data: ProfileFile = { version: 1 };
 
@@ -66,10 +73,20 @@ export class ProfileSettingsStore {
       if (parsed && parsed.version === 1) {
         const next: ProfileFile = { version: 1 };
         if (parsed.aimy && typeof parsed.aimy === 'object') {
-          next.aimy = { api: normalizeApi((parsed.aimy as { api?: unknown }).api) };
+          const imageInput = normalizeImageInput((parsed.aimy as { imageInput?: unknown }).imageInput);
+          const api = (parsed.aimy as { api?: unknown }).api;
+          next.aimy = {
+            ...(api === undefined ? {} : { api: normalizeApi(api) }),
+            ...(imageInput === undefined ? {} : { imageInput }),
+          };
         }
         if (parsed.compat && typeof parsed.compat.baseURL === 'string') {
-          next.compat = { baseURL: parsed.compat.baseURL, api: normalizeApi(parsed.compat.api) };
+          const imageInput = normalizeImageInput(parsed.compat.imageInput);
+          next.compat = {
+            baseURL: parsed.compat.baseURL,
+            api: normalizeApi(parsed.compat.api),
+            ...(imageInput === undefined ? {} : { imageInput }),
+          };
         }
         this.data = next;
       }
@@ -87,19 +104,53 @@ export class ProfileSettingsStore {
     return this.data.aimy?.api;
   }
 
-  setAimyApi(api: RelayApi): void {
-    this.data = { ...this.data, version: 1, aimy: { api: normalizeApi(api) } };
+  /** 预设档案的图片开关覆盖；未设置时返回 undefined，由调用方回退到默认值。 */
+  aimyImageInput(): boolean | undefined {
+    return this.data.aimy?.imageInput;
+  }
+
+  /**
+   * 更新预设档案的可写字段（协议 / 图片开关）。
+   * 只覆盖传入的字段，未传的保留原值 —— 面板上一个开关不该顺手把协议改回去。
+   */
+  setAimy(patch: { api?: RelayApi; imageInput?: boolean }): void {
+    const prev = this.data.aimy;
+    const api = normalizeApi(patch.api ?? prev?.api);
+    const imageInput = normalizeImageInput(patch.imageInput) ?? prev?.imageInput;
+    this.data = {
+      ...this.data,
+      version: 1,
+      aimy: { api, ...(imageInput === undefined ? {} : { imageInput }) },
+    };
     this.persist();
+  }
+
+  setAimyApi(api: RelayApi): void {
+    this.setAimy({ api });
   }
 
   clearAimyApi(): void {
-    const { aimy: _drop, ...rest } = this.data;
-    this.data = { ...rest, version: 1 };
+    const { api: _drop, ...rest } = this.data.aimy ?? {};
+    if (rest.imageInput === undefined) {
+      const { aimy: _dropAll, ...others } = this.data;
+      this.data = { ...others, version: 1 };
+    } else {
+      this.data = { ...this.data, version: 1, aimy: rest };
+    }
     this.persist();
   }
 
-  setCompat(settings: CompatSettings): void {
-    this.data = { ...this.data, version: 1, compat: { baseURL: settings.baseURL, api: normalizeApi(settings.api) } };
+  /** 更新兼容模式的可写字段；未传的保留原值。 */
+  setCompat(settings: { baseURL?: string; api?: RelayApi; imageInput?: boolean }): void {
+    const prev = this.data.compat;
+    const baseURL = settings.baseURL ?? prev?.baseURL ?? '';
+    const api = normalizeApi(settings.api ?? prev?.api);
+    const imageInput = normalizeImageInput(settings.imageInput) ?? prev?.imageInput;
+    this.data = {
+      ...this.data,
+      version: 1,
+      compat: { baseURL, api, ...(imageInput === undefined ? {} : { imageInput }) },
+    };
     this.persist();
   }
 
@@ -117,6 +168,11 @@ export class ProfileSettingsStore {
       // 落盘失败只影响下次冷启动，不影响当前会话
     }
   }
+}
+
+/** 图片开关落盘前的规整：只认布尔值，其它一律当作「没设」。 */
+export function normalizeImageInput(value: unknown): boolean | undefined {
+  return typeof value === 'boolean' ? value : undefined;
 }
 
 /**
@@ -160,12 +216,15 @@ export interface ResolveProfileInput {
     api: RelayApi;
     defaultContextWindow: number;
     defaultMaxTokens: number;
+    /** 未落盘覆盖时的图片开关默认值 */
+    imageInput?: boolean;
   };
 }
 
 /** 解析出某档案的生效配置。 */
 export function resolveProfile(input: ResolveProfileInput): ProfileConfig {
   const { id, settings, defaults } = input;
+  const fallbackImageInput = defaults.imageInput ?? DEFAULT_IMAGE_INPUT;
   if (id === 'aimy') {
     return {
       id,
@@ -177,6 +236,7 @@ export function resolveProfile(input: ResolveProfileInput): ProfileConfig {
       preset: true,
       defaultContextWindow: defaults.defaultContextWindow,
       defaultMaxTokens: defaults.defaultMaxTokens,
+      imageInput: settings.aimyImageInput() ?? fallbackImageInput,
     };
   }
 
@@ -191,5 +251,6 @@ export function resolveProfile(input: ResolveProfileInput): ProfileConfig {
     preset: false,
     defaultContextWindow: defaults.defaultContextWindow,
     defaultMaxTokens: defaults.defaultMaxTokens,
+    imageInput: compat?.imageInput ?? fallbackImageInput,
   };
 }

@@ -11,7 +11,7 @@
  * 目录变化时的做法是 dispose 旧 fiber 再用新配置挂一次（providers 是 volatile
  * 字段且写入通道只对 Loader 开放，插件侧无法原地改），路由注册本身是原子的。
  */
-import { modelEntry } from '../shared/model-profile';
+import { MODEL_INPUT_TEXT, MODEL_INPUT_TEXT_IMAGE, modelEntry } from '../shared/model-profile';
 import { DEFAULT_API, type RelayApi, type RelayModel } from '../shared/types';
 
 export type { RelayApi };
@@ -30,6 +30,8 @@ export interface ProviderOptions {
   models: RelayModel[];
   defaultContextWindow: number;
   defaultMaxTokens: number;
+  /** 是否声明图片输入（默认开）。关掉后模型只声明 text。 */
+  imageInput?: boolean;
   /** 模块说明符，默认官方适配器；测试可指向假实现 */
   adapterModule?: string;
 }
@@ -120,6 +122,7 @@ export function completionsBaseURL(baseURL: string): string {
 
 /** 组装一个 provider profile；导出便于单测断言字段映射。 */
 export function buildProfile(opts: ProviderOptions): Record<string, unknown> {
+  const imageInput = opts.imageInput !== false;
   return {
     displayName: opts.displayName,
     api: opts.api ?? DEFAULT_API,
@@ -127,9 +130,11 @@ export function buildProfile(opts: ProviderOptions): Record<string, unknown> {
     apiKeyEnv: opts.apiKeyRef,
     defaultContextWindow: opts.defaultContextWindow,
     defaultMaxTokens: opts.defaultMaxTokens,
-    // 与 settings 路径共用同一份能力声明：cost + 思考档位。
+    // provider 级兜底（逐模型已声明 input；空数组会回落到这里）
+    defaultInput: [...(imageInput ? MODEL_INPUT_TEXT_IMAGE : MODEL_INPUT_TEXT)],
+    // 与 settings 路径共用同一份能力声明：contextWindow + 输入模态 + cost + 思考档位。
     // 少了 reasoningEfforts，pi-ai 会回退 reasoning:false，模型就没有档位可选。
-    models: opts.models.map((m) => modelEntry(m.id, m.name)),
+    models: opts.models.map((m) => modelEntry(m.id, m.name, imageInput)),
   };
 }
 

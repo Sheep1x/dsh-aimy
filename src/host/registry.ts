@@ -15,7 +15,12 @@
  * 写 settings 则完全避开重复注册：provider 进入的是**同一个** pi-ai 实例的 profiles()，
  * 由它自己调 registerAdapter；也顺带获得 Models 设置页的可编辑能力。
  */
-import { DEFAULT_REASONING_EFFORT, modelEntry } from '../shared/model-profile';
+import {
+  DEFAULT_REASONING_EFFORT,
+  MODEL_INPUT_TEXT,
+  MODEL_INPUT_TEXT_IMAGE,
+  modelEntry,
+} from '../shared/model-profile';
 import type { RelayApi, RelayModel } from '../shared/types';
 
 export interface RegistryTarget {
@@ -30,6 +35,8 @@ export interface RegistryTarget {
   models: RelayModel[];
   defaultContextWindow: number;
   defaultMaxTokens: number;
+  /** 是否声明图片输入（默认开）。关掉后模型只声明 text。 */
+  imageInput?: boolean;
 }
 
 /** 默认模型选择所在的 profile 条目 id（DSH 内置插件）。 */
@@ -78,6 +85,7 @@ export async function writeProviderViaSettings(
   if (!settings) return undefined;
   if (!describeNamespace(settings, target.settingsNs)) return undefined;
 
+  const imageInput = target.imageInput !== false;
   const provider = {
     displayName: target.displayName,
     api: target.api,
@@ -85,9 +93,13 @@ export async function writeProviderViaSettings(
     apiKeyEnv: target.apiKeyRef,
     defaultContextWindow: target.defaultContextWindow,
     defaultMaxTokens: target.defaultMaxTokens,
+    // provider 级兜底：逐模型已经声明了 input，这里再兜一层，
+    // 免得哪天某个模型条目的 input 被写成空数组（declaredInput 对空数组返回
+    // undefined，会直接回落到这里）。
+    defaultInput: [...(imageInput ? MODEL_INPUT_TEXT_IMAGE : MODEL_INPUT_TEXT)],
     // 必须带 cost 与 reasoningEfforts：少了后者，pi-ai 会认为该模型不支持思考，
     // 模型选择器里就没有档位可选（resolveModelReasoning 未声明时回退 reasoning:false）。
-    models: target.models.map((m) => modelEntry(m.id, m.name)),
+    models: target.models.map((m) => modelEntry(m.id, m.name, imageInput)),
   };
 
   try {

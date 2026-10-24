@@ -116,6 +116,7 @@ const stateBody = {
   preset: true,
   baseURL: RELAY_URL,
   api: 'openai-responses',
+  imageInput: true,
   configured: true,
   connected: false,
   supportsSwitch: false,
@@ -377,5 +378,45 @@ describe('dsh-aimy client', () => {
     const save = calls.find((c) => c.method === 'POST' && c.url.includes('/config?profile=aimy'));
     assert.ok(save, '切换协议应 POST /config?profile=aimy，实际请求：' + JSON.stringify(calls.map((c) => c.url)));
     assert.deepEqual(JSON.parse(save.body), { api: 'openai-completions' });
+  });
+
+  it('图片输入开关：默认勾上，取消后 POST 保存', async () => {
+    const calls = [];
+    globalThis.fetch = async (url, init) => {
+      calls.push({ url: String(url), method: init?.method ?? 'GET', body: init?.body ?? null });
+      return { text: async () => JSON.stringify({ success: true, data: stateBody }) };
+    };
+
+    const Panel = registry.entries.get('main:dsh-aimy').component;
+    const tree = await mount(Panel);
+    const box = elements(tree)
+      .filter((el) => el.type === 'input' && el.props?.type === 'checkbox')
+      .find((el) => typeof el.props?.onChange === 'function');
+
+    assert.ok(box, '面板里应有图片输入开关');
+    assert.equal(box.props.checked, true, '图片输入默认应勾上');
+
+    box.props.onChange({ target: { checked: false } });
+    await settle();
+
+    const save = calls.find((c) => c.method === 'POST' && c.url.includes('/config?profile=aimy'));
+    assert.ok(save, '切开关应 POST /config?profile=aimy');
+    assert.deepEqual(JSON.parse(save.body), { imageInput: false }, '只提交开关，不夹带协议/地址');
+  });
+
+  it('图片输入开关关闭时复选框不勾选', async () => {
+    globalThis.fetch = async () => ({
+      text: async () => JSON.stringify({ success: true, data: { ...stateBody, imageInput: false } }),
+    });
+
+    const Panel = registry.entries.get('main:dsh-aimy').component;
+    const tree = await mount(Panel);
+    const box = elements(tree)
+      .filter((el) => el.type === 'input' && el.props?.type === 'checkbox')
+      .find((el) => typeof el.props?.onChange === 'function');
+
+    assert.ok(box, '面板里应有图片输入开关');
+    assert.equal(box.props.checked, false, '服务端说关了，复选框就不该勾选');
+    assert.ok(textOf(tree).includes('已关闭'), '应提示当前是关闭状态');
   });
 });

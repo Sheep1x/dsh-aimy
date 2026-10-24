@@ -55,6 +55,8 @@ export interface Config {
   /** 通用 */
   defaultContextWindow?: number;
   defaultMaxTokens?: number;
+  /** 默认为模型声明图片输入（面板有开关，落盘到 profiles.json）*/
+  imageInput?: boolean;
   providerAdapter?: string;
   /** 仅调试用：直接内联密钥（不落盘、不推荐）*/
   apiKey?: string;
@@ -69,7 +71,7 @@ const DEFAULT_KEY_REF = 'ONEHUB_API_KEY';
 /** DSH profile 里官方 pi-ai 条目的默认 id（cordis.patch.yml 里的 - id: llm-pi-ai）。 */
 const DEFAULT_SETTINGS_NS = 'llm-pi-ai';
 const DEFAULT_ROUTE = 'onehub';
-const DEFAULT_CONTEXT_WINDOW = 131072;
+const DEFAULT_CONTEXT_WINDOW = 1_000_000;
 const DEFAULT_MAX_TOKENS = 8192;
 
 /**
@@ -337,6 +339,7 @@ export function apply(ctx: any, config?: Config): void {
         api: normalizeApi(cfg.api),
         defaultContextWindow: cfg.defaultContextWindow ?? DEFAULT_CONTEXT_WINDOW,
         defaultMaxTokens: cfg.defaultMaxTokens ?? DEFAULT_MAX_TOKENS,
+        imageInput: cfg.imageInput,
       },
     });
   };
@@ -382,6 +385,7 @@ export function apply(ctx: any, config?: Config): void {
       models,
       defaultContextWindow: profile.defaultContextWindow,
       defaultMaxTokens: profile.defaultMaxTokens,
+      imageInput: profile.imageInput,
     });
     if (viaSettings && viaSettings.kind === 'settings') {
       // 交给宿主那个 pi-ai 实例自己注册路由；本插件不再持有 fiber
@@ -420,6 +424,7 @@ export function apply(ctx: any, config?: Config): void {
           models,
           defaultContextWindow: profile.defaultContextWindow,
           defaultMaxTokens: profile.defaultMaxTokens,
+          imageInput: profile.imageInput,
           adapterModule: cfg.providerAdapter,
         });
         mounts.set(profile.id, created);
@@ -516,6 +521,7 @@ export function apply(ctx: any, config?: Config): void {
     state.displayName = profile.displayName;
     state.preset = profile.preset;
     state.api = profile.api;
+    state.imageInput = profile.imageInput;
     state.configured = Boolean(profile.baseURL);
     return state;
   };
@@ -645,15 +651,16 @@ export function apply(ctx: any, config?: Config): void {
               return;
             }
 
-            // 保存地址 / 协议。
-            //   预设档案：只能改协议（地址固化在配置里，界面只读展示）
+            // 保存地址 / 协议 / 图片输入开关。
+            //   预设档案：只能改协议与图片开关（地址固化在配置里，界面只读展示）
             //   兼容模式：地址与协议都可改；只传 api 时保留原地址
             if (method === 'POST' && route === '/config') {
               const payload = parseJson(await readBody(req));
               const hasBaseURL = typeof payload?.baseURL === 'string' && payload.baseURL.trim().length > 0;
               const hasApi = payload?.api !== undefined;
+              const hasImageInput = typeof payload?.imageInput === 'boolean';
 
-              if (!hasBaseURL && !hasApi) {
+              if (!hasBaseURL && !hasApi && !hasImageInput) {
                 sendJson(res, 400, { success: false, message: '没有可保存的字段' });
                 return;
               }
@@ -663,23 +670,31 @@ export function apply(ctx: any, config?: Config): void {
                   sendJson(res, 403, { success: false, message: '预设档案的地址不可修改' });
                   return;
                 }
-                settings.setAimyApi(normalizeApi(payload?.api));
-              } else {
-                if (hasBaseURL) {
-                  const baseURL = normalizeBaseURL(String(payload?.baseURL ?? ''));
-                  if (!/^https?:\/\//i.test(baseURL)) {
-                    sendJson(res, 400, { success: false, message: '请填写完整的 http(s) 地址' });
-                    return;
-                  }
-                  settings.setCompat({ baseURL, api: normalizeApi(payload?.api ?? profile.api) });
-                } else {
-                  // 只改协议：地址必须已经存在，否则这条档案本来就没法联网
-                  if (!profile.baseURL) {
-                    sendJson(res, 400, { success: false, message: '请先填写地址' });
-                    return;
-                  }
-                  settings.setCompat({ baseURL: profile.baseURL, api: normalizeApi(payload?.api) });
+                settings.setAimy({
+                  ...(hasApi ? { api: normalizeApi(payload?.api) } : {}),
+                  ...(hasImageInput ? { imageInput: payload.imageInput as boolean } : {}),
+                });
+              } else if (hasBaseURL) {
+                const baseURL = normalizeBaseURL(String(payload?.baseURL ?? ''));
+                if (!/^https?:\/\//i.test(baseURL)) {
+                  sendJson(res, 400, { success: false, message: '请填写完整的 http(s) 地址' });
+                  return;
                 }
+                settings.setCompat({
+                  baseURL,
+                  api: normalizeApi(payload?.api ?? profile.api),
+                  ...(hasImageInput ? { imageInput: payload.imageInput as boolean } : {}),
+                });
+              } else {
+                // 只改协议 / 开关：地址必须已经存在，否则这条档案本来就没法联网
+                if (!profile.baseURL) {
+                  sendJson(res, 400, { success: false, message: '请先填写地址' });
+                  return;
+                }
+                settings.setCompat({
+                  api: normalizeApi(payload?.api ?? profile.api),
+                  ...(hasImageInput ? { imageInput: payload.imageInput as boolean } : {}),
+                });
               }
 
               // 协议变了要重新挂载，这里用 refresh 强制重建

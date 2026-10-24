@@ -169,12 +169,30 @@ describe('dsh-aimy client', () => {
     assert.equal(panel.id, main.key, '侧栏 id 必须等于 main 的 key，否则点图标打不开面板');
   });
 
-  it('侧栏图标渲染成 svg，并跟随 size / active', () => {
+  it('侧栏图标是中转站 logo 的矢量路径，跟随 size / active / 主题色', () => {
     const Icon = registry.entries.get('sidebar.panellist:dsh-aimy').component;
     const tree = Icon({ size: 18, active: true });
+
     assert.equal(tree.type, 'svg');
     assert.equal(tree.props.width, 18);
-    assert.ok(elements(tree).some((el) => el.type === 'circle'), '图标里应有节点圆');
+    assert.equal(tree.props.height, 18);
+    // 单色路径：用 currentColor，才能跟随亮/暗主题
+    assert.equal(tree.props.fill, 'currentColor');
+
+    const paths = elements(tree).filter((el) => el.type === 'path');
+    assert.equal(paths.length, 1, '应是一条闭合轮廓');
+    const d = String(paths[0].props.d ?? '');
+    assert.ok(d.length > 200, '路径应有实际轮廓数据，实际长度：' + d.length);
+    assert.match(d, /^M[\d.]/u, '路径应以 M 起笔');
+    assert.ok(d.endsWith('z'), '轮廓必须闭合');
+    assert.ok(!/NaN|undefined|null/u.test(d), '路径数据不得含非法值');
+    // 轮廓来自位图追踪：点数应足够表达 logo 细节
+    const segments = (d.match(/l/gu) ?? []).length;
+    assert.ok(segments >= 30, '轮廓点数过少会丢失 logo 形状，实际：' + segments);
+
+    // active 状态影响不透明度
+    const inactive = Icon({ size: 18, active: false });
+    assert.notEqual(inactive.props.style.opacity, tree.props.style.opacity);
   });
 
   it('地址显示为默认中转站地址', async () => {

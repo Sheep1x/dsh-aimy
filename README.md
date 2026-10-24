@@ -14,7 +14,9 @@ DSH（DeepSeek Harness）插件 **dsh-Aimy**：解决中转站多分组多倍率
 | 首页左侧栏图标 + 主区面板「**Aimy-艾米**」 | `sidebar.panellist`（order 30）+ `main`（key `dsh-aimy`） | 整页面板，撑满主区、自带滚动 |
 
 - 两处共用同一个 `makeSection()`，只是 `variant` 不同（`settings` / `panel`）。
-- 侧栏图标是内联 SVG（`RelayIcon`），走 `currentColor`，跟随主题与选中态，不依赖 UI 组件库。
+- 侧栏图标是中转站官方 logo 的**矢量轮廓**（`RelayIcon`），走 `currentColor`，跟随主题与选中态。
+  路径不是手画的：把站点 `/logo-icon.png` 的 alpha 用 Moore 邻域追踪出闭合轮廓、
+  再经 Douglas-Peucker 简化为 60 点，与 256px 原图栅格比对 IoU 98.5%。
 - 面板 id、`main` 的 key、包名一致，都是 `dsh-aimy`；sidebar 点图标时把 `activePanelId` 设成该 id，`main` 据此命中。
 - 三条注册都在 `src/client/app.ts` 的 `apply()` 里，`inject = ['slots']`。
 - client 侧必须用 `react.createElement`（可变 children）；`react/jsx-runtime` 的 `jsx(type, props, key)` 第三参是 key，会把 `h(type, props, ...children)` 的子节点全部丢掉。

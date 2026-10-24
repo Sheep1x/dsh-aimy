@@ -15,6 +15,7 @@
  * 写 settings 则完全避开重复注册：provider 进入的是**同一个** pi-ai 实例的 profiles()，
  * 由它自己调 registerAdapter；也顺带获得 Models 设置页的可编辑能力。
  */
+import { DEFAULT_REASONING_EFFORT, modelEntry } from '../shared/model-profile';
 import type { RelayApi, RelayModel } from '../shared/types';
 
 export interface RegistryTarget {
@@ -30,6 +31,9 @@ export interface RegistryTarget {
   defaultContextWindow: number;
   defaultMaxTokens: number;
 }
+
+/** 默认模型选择所在的 profile 条目 id（DSH 内置插件）。 */
+const DEFAULT_MODEL_NS = 'agent-default-model';
 
 export type RegistryOutcome =
   | { kind: 'settings'; ns: string }
@@ -81,7 +85,9 @@ export async function writeProviderViaSettings(
     apiKeyEnv: target.apiKeyRef,
     defaultContextWindow: target.defaultContextWindow,
     defaultMaxTokens: target.defaultMaxTokens,
-    models: target.models.map((m) => ({ id: m.id })),
+    // 必须带 cost 与 reasoningEfforts：少了后者，pi-ai 会认为该模型不支持思考，
+    // 模型选择器里就没有档位可选（resolveModelReasoning 未声明时回退 reasoning:false）。
+    models: target.models.map((m) => modelEntry(m.id, m.name)),
   };
 
   try {
@@ -96,7 +102,43 @@ export async function writeProviderViaSettings(
 }
 
 /**
- * 把 provider 从现有 pi-ai 条目里移除（清除密钥或切换档案时用）。
+ * 把默认思考档位设为 high。
+ *
+ * 为什么需要这一步：模型声明了 reasoningEfforts 只是让**档位可选**，
+ * 实际下发什么档位由 agent-default-model 的 reasoningEffort 决定。
+ * 不设的话走模型/线路默认，用户看到的是「没档位」的观感。
+ *
+ * 只在当前默认选择确实指向本插件路由时才写，避免抢别的 provider 的设置。
+ *
+ * @returns 写入结果；不需要写或写不进去时返回 false
+ */
+export async function setDefaultReasoningEffort(
+  ctx: any,
+  target: Pick<RegistryTarget, 'settingsNs' | 'routeName'>,
+  effort: string = DEFAULT_REASONING_EFFORT,
+): Promise<boolean> {
+  const settings = settingsWriter(ctx);
+  if (!settings || typeof settings.update !== 'function') return false;
+
+  // 先确认默认选择指向我们的路由，否则不动
+  try {
+    const model = typeof ctx?.get === 'function' ? ctx.get('agentDefaultModel', false) : undefined;
+    const current = model && typeof model.currentSelection === 'function' ? model.currentSelection() : undefined;
+    if (!current || current.provider !== target.routeName) return false;
+  } catch {
+    return false;
+  }
+
+  try {
+    // agent-default-model 是独立的 profile 条目，ns 就是它的插件 id
+    await settings.update(DEFAULT_MODEL_NS, { reasoningEffort: effort });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** 把 provider 从现有 pi-ai 条目里移除（清除密钥或切换档案时用）。
  * 用 unset 语义删除字段：settings.mutate 的 op.path 指向 providers.<routeName>。
  */
 export async function removeProviderViaSettings(

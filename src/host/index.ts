@@ -26,7 +26,7 @@ import {
   type ProfileId,
   type RelayApi,
 } from './profiles';
-import { writeProviderViaSettings, removeProviderViaSettings } from './registry';
+import { removeProviderViaSettings, setDefaultReasoningEffort, writeProviderViaSettings } from './registry';
 import { CatalogStore } from './state';
 import { describeError, readState, switchGroup, type RouteDeps } from './routes';
 import type { RelayModel } from '../shared/types';
@@ -382,6 +382,12 @@ export function apply(ctx: any, config?: Config): void {
       // 交给宿主那个 pi-ai 实例自己注册路由；本插件不再持有 fiber
       const check = await verifyRoute(ctx, profile.routeName);
       settingsRoutes.set(profile.id, { routeName: profile.routeName, modelCount: models.length });
+      // 档位可选 ≠ 档位已选。模型声明 reasoningEfforts 只是提供选项，
+      // 实际下发什么由 agent-default-model 决定，默认设 High。
+      await setDefaultReasoningEffort(ctx, {
+        settingsNs: cfg.settingsNs ?? DEFAULT_SETTINGS_NS,
+        routeName: profile.routeName,
+      });
       if (check.present === false) {
         const message = '已写入 ' + viaSettings.ns + ' 的 providers，但模型路由仍未出现在 llm 中';
         mountErrors.set(profile.id, message);

@@ -272,6 +272,17 @@ describe('dsh-aimy host routes', () => {
       for (const k of ['input', 'output', 'cacheRead', 'cacheWrite']) {
         assert.equal(typeof m.cost[k], 'number', 'cost.' + k + ' 必须是数字');
       }
+      // 档位：未声明 reasoningEfforts 时 pi-ai 回退 reasoning:false，
+      // 模型选择器里就没有思考档位可选。
+      assert.ok(m.reasoningEfforts, '每个 model 必须声明 reasoningEfforts：' + JSON.stringify(m));
+      const levels = Object.keys(m.reasoningEfforts);
+      assert.ok(levels.includes('high'), 'reasoningEfforts 必须包含 high 档');
+      for (const lv of levels) {
+        const wire = m.reasoningEfforts[lv];
+        if (lv === 'off') continue;
+        assert.equal(typeof wire, 'string', 'reasoningEfforts.' + lv + ' 必须是线路值');
+        assert.ok(wire.length > 0, 'reasoningEfforts.' + lv + ' 不能为空串');
+      }
     }
     assert.equal(profile.defaultContextWindow, 131072);
     assert.equal(profile.defaultMaxTokens, 8192);

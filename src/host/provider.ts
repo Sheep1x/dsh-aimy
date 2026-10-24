@@ -11,6 +11,7 @@
  * 目录变化时的做法是 dispose 旧 fiber 再用新配置挂一次（providers 是 volatile
  * 字段且写入通道只对 Loader 开放，插件侧无法原地改），路由注册本身是原子的。
  */
+import { modelEntry } from '../shared/model-profile';
 import { DEFAULT_API, type RelayApi, type RelayModel } from '../shared/types';
 
 export type { RelayApi };
@@ -126,23 +127,9 @@ export function buildProfile(opts: ProviderOptions): Record<string, unknown> {
     apiKeyEnv: opts.apiKeyRef,
     defaultContextWindow: opts.defaultContextWindow,
     defaultMaxTokens: opts.defaultMaxTokens,
-    /**
-     * 必须显式给 cost。
-     *
-     * pi-ai 的 calculateCost() 里是 `let rates = model.cost` 然后
-     * `model.cost.tiers ?? []` —— cost 缺失时不是"用默认值兜底"，
-     * 而是直接抛 TypeError: Cannot read properties of undefined (reading 'tiers')，
-     * 流里已经收到的文本全部作废，stopReason 停在 error，
-     * 界面上就是「Response incomplete without a provider reason / PI_AI_ERROR」。
-     *
-     * 这张表是「我们自己的中转站，不掌握上游定价」的如实表达：
-     * 全 0 表示不参与计费估算，而不是声称免费。
-     */
-    models: opts.models.map((m) => ({
-      id: m.id,
-      ...(m.name === undefined ? {} : { name: m.name }),
-      cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-    })),
+    // 与 settings 路径共用同一份能力声明：cost + 思考档位。
+    // 少了 reasoningEfforts，pi-ai 会回退 reasoning:false，模型就没有档位可选。
+    models: opts.models.map((m) => modelEntry(m.id, m.name)),
   };
 }
 

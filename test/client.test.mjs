@@ -184,10 +184,16 @@ describe('dsh-aimy client', () => {
     const d = String(paths[0].props.d ?? '');
     assert.ok(d.length > 200, '路径应有实际轮廓数据，实际长度：' + d.length);
     assert.match(d, /^M[\d.]/u, '路径应以 M 起笔');
-    assert.ok(d.endsWith('z'), '轮廓必须闭合');
+    // 多段子路径（外轮廓 + 孔洞）拼接，每段都必须闭合
+    // 段之间用空格分隔，先按 M/m 切段再去掉首尾空白
+    const subpaths = (d.match(/[Mm][^Mm]*/gu) ?? []).map((seg) => seg.trim());
+    assert.ok(subpaths.length >= 1, '应至少有一段子路径');
+    for (const seg of subpaths) {
+      assert.match(seg, /[Zz]$/u, '每段子路径都必须闭合，实际段落：' + seg.slice(-20));
+    }
     assert.ok(!/NaN|undefined|null/u.test(d), '路径数据不得含非法值');
     // 轮廓来自位图追踪：点数应足够表达 logo 细节
-    const segments = (d.match(/l/gu) ?? []).length;
+    const segments = (d.match(/[Ll]/gu) ?? []).length;
     assert.ok(segments >= 30, '轮廓点数过少会丢失 logo 形状，实际：' + segments);
 
     // active 状态影响不透明度

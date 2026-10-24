@@ -5,8 +5,8 @@
 # - package.json 里声明了 dsh.client，DSH 模块系统会同时把本包扫描为浏览器插件，
 #   提供 /plugins/dsh-aimy/client.js 给页面。
 #
-# 设置页有两个 Tab：
-#   Aimy-艾米（预设，地址不展示、不可编辑；支持真实切分组）
+# 面板有两个 Tab（入口在首页左侧栏，不占用设置页）：
+#   Aimy-艾米（预设，地址只读展示、不可编辑；支持真实切分组）
 #   兼容模式（用户自填 URL + 协议，适配 new-api / sub2api 等）
 - insert:
     - id: dsh-aimy
@@ -25,7 +25,7 @@
         api: 'openai-responses'
 
         # ── 兼容模式 ──────────────────────────────────────────────
-        # 地址与协议由设置页写入 $DSH_HOME/dsh-aimy/profiles.json，
+        # 地址与协议由面板写入 $DSH_HOME/dsh-aimy/profiles.json，
         # 这里只给默认协议；密钥固定用 ONEHUB_COMPAT_API_KEY
         compatApi: 'openai-responses'
 

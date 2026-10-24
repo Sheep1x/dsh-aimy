@@ -6,9 +6,9 @@ import { BRAND_ICON_PATH } from '../shared/brand';
 import { makeSection } from './section';
 import type * as ReactNS from 'react';
 
-/** 设置页分区 id / 左侧栏面板 id / main 面板 key，三者必须一致。 */
+/** 左侧栏面板 id / main 面板 key，两者必须一致（sidebar 点图标时用它定位页面）。 */
 const PANEL_ID = 'dsh-aimy';
-/** 设置页分区名与侧栏面板名。 */
+/** 侧栏图标与面板标题的显示名。 */
 const PANEL_LABEL = 'Aimy-艾米';
 
 /** 返回 DSH 插件 factory：参数是 require，返回值是 module。 */
@@ -22,7 +22,6 @@ export function makeFactory(): (require: (mod: string) => any) => any {
     const { createElement: h, useCallback, useEffect, useState } = react;
 
     const name = 'onehub';
-    // 设置分区插槽由 @deepseek-ai/dsh-client-ui-settings 声明，
     // main / sidebar.panellist 由 @deepseek-ai/dsh-client-ui-layout、-ui-sidebar 声明
     const inject = ['slots'];
 
@@ -59,22 +58,11 @@ export function makeFactory(): (require: (mod: string) => any) => any {
 
     function apply(ctx: any): void {
       const deps = { h, useState, useEffect, useCallback, request };
-      // 设置页分区：紧凑版
-      const Section = makeSection(deps, { variant: 'settings' });
-      // 左侧栏面板页：占满主区、自带滚动
+      // 只保留首页左侧栏面板这一个入口。
+      // 不再注册 settings.section：宿主设置页左侧 nav 的图标按分区 id 硬编码
+      // （只认 account/models/agent-presets/plugins/archived-sessions，其余一律齿轮），
+      // 插槽也不消费 icon 字段，插件无法覆盖 —— 与其留一个齿轮行，不如只留侧栏入口。
       const Panel = makeSection(deps, { variant: 'panel' });
-
-      ctx.slots.inject('settings.section', function* () {
-        yield ctx.slots.register(
-          {
-            name: 'settings.section',
-            id: 'onehub-relay',
-            order: 40,
-            label: () => PANEL_LABEL,
-          },
-          Section,
-        );
-      });
 
       // 主区面板：sidebar 点图标后 layout 会把 activePanelId 设为 PANEL_ID，
       // 这里按 key 命中渲染我们的页面

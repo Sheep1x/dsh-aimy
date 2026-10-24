@@ -6,34 +6,28 @@ DSH（DeepSeek Harness）插件 **dsh-Aimy**：解决中转站多分组多倍率
 
 配合的中转站接口：`GET/PUT /v1/token/group`（见 [../docs/dsh-aimy.md](../docs/dsh-aimy.md)）。
 
-## 两个入口
+## 入口
 
 | 入口 | 插槽 | 说明 |
 |---|---|---|
-| 设置页「**Aimy-艾米**」分区 | `settings.section`（order 40） | 紧凑版，限宽 720 |
 | 首页左侧栏图标 + 主区面板「**Aimy-艾米**」 | `sidebar.panellist`（order 30）+ `main`（key `dsh-aimy`） | 整页面板，撑满主区、自带滚动 |
 
-- 两处共用同一个 `makeSection()`，只是 `variant` 不同（`settings` / `panel`）。
-- 侧栏图标是中转站官方 logo 的**加粗线稿**（`RelayIcon`），走 `currentColor`，跟随主题与选中态。
-  路径不是手画的：站点 `/logo-icon.png` 的深色描边 → 形态学膨胀（等效线宽 +1.5 视框单位）→
-  Moore 邻域闭合轮廓追踪 → Douglas-Peucker 简化，含内部孔洞（evenodd），与加粗掩码 IoU 95.3%。
-  数据在 `src/shared/brand.ts`，设置页分区标题旁复用同一份。
-
-> **设置页左侧 nav 的图标改不了**：宿主 `dsh-client-ui-settings-general` 的 `navIcon(id)` 按
-> 分区 id 硬编码，只认 `account` / `models` / `agent-presets` / `plugins` / `archived-sessions`，
-> 其余一律回落到齿轮（`IconSettingsOutlineMedium`）。`settings.section` 插槽只消费
-> `id`/`order`/`label`，从不读 `icon`，插件侧无法覆盖。改用这些 id 也不行——它们已被
-> 内置分区占用，重复 id 会让 `renderSlot(only: active)` 同时渲染两个分区。
-> 因此把品牌图标放在**分区内容**里（标题旁），见下图位置。
 - 面板 id、`main` 的 key、包名一致，都是 `dsh-aimy`；sidebar 点图标时把 `activePanelId` 设成该 id，`main` 据此命中。
-- 三条注册都在 `src/client/app.ts` 的 `apply()` 里，`inject = ['slots']`。
+- 两处注册都在 `src/client/app.ts` 的 `apply()` 里，`inject = ['slots']`。
 - client 侧必须用 `react.createElement`（可变 children）；`react/jsx-runtime` 的 `jsx(type, props, key)` 第三参是 key，会把 `h(type, props, ...children)` 的子节点全部丢掉。
+- 面板头部与侧栏图标共用 `src/shared/brand.ts` 里的品牌路径。
+
+> **为什么不放设置页**：宿主 `dsh-client-ui-settings-general` 的 `navIcon(id)` 按分区 id
+> 硬编码图标，只认 `account` / `models` / `agent-presets` / `plugins` / `archived-sessions`，
+> 其余一律回落到齿轮；`settings.section` 插槽也只消费 `id`/`order`/`label`，从不读 `icon`，
+> 插件侧无法覆盖。借用已知 id 同样不可行——它们已被内置分区占用，重复 id 会让
+> `renderSlot(only: active)` 同时渲染两个分区。所以只保留侧栏入口，避免设置页出现一行齿轮。
 
 ## 状态
 
-- ✅ P1：包骨架、host 路由、设置页分区、分组读取与切换、旧版降级
+- ✅ P1：包骨架、host 路由、侧栏面板、分组读取与切换、旧版降级
 - ✅ P2：复用 `@deepseek-ai/dsh-llm-pi-ai` 挂载模型路由，切组后重挂载刷新模型目录
-- ✅ P4-1：设置页直接填密钥（写 DSH 凭据库，write-only），保存后立即探测并挂载模型
+- ✅ P4-1：面板里直接填密钥（写 DSH 凭据库，write-only），保存后立即探测并挂载模型
 - ✅ P4-2：「当前选中模型不在新分组」提示（只提示，不自动改选）
 - ✅ 双档案：Aimy-艾米（地址隐藏的预设）+ 兼容模式（自填 URL/协议，适配 new-api / sub2api）
 - ⏳ 可选：插件市场打包（index 格式 + submission 校验）
@@ -112,7 +106,7 @@ pnpm add file:D:/openwork/one-hub/dsh-aimy
 }
 ```
 
-重启 DSH 后，设置页出现「中转站」分区。
+重启 DSH 后，首页左侧栏出现「Aimy-艾米」图标，点开是整页面板。
 
 ## 两个 Tab / 两个档案
 
@@ -140,7 +134,7 @@ pnpm add file:D:/openwork/one-hub/dsh-aimy
 
 密钥**不写进配置文件**：优先级是
 
-1. 设置页「API Key → 保存」写入的凭据库值（`ctx.credentials.set(apiKeyRef, …)`，write-only）
+1. 面板「API Key → 保存」写入的凭据库值（`ctx.credentials.set(apiKeyRef, …)`，write-only）
 2. DSH 凭据库里已有的同名值
 3. 同名环境变量
 
@@ -216,7 +210,7 @@ src/
   host/routes.ts      /dsh-aimy-relay/* 的纯函数编排
   host/index.ts       Cordis 插件入口（name / inject / apply）
   client/index.ts     __ModuleLoader__ 外壳
-  client/app.ts       装配层：注册 settings.section
+  client/app.ts       装配层：注册 sidebar.panellist + main
   client/section.ts   「中转站」设置分区 UI
 ```
 
@@ -224,7 +218,7 @@ src/
 
 `openai-responses`（默认）· `openai-completions` · `anthropic-messages`
 
-**协议在界面上是下拉框，两个 Tab 都能改**：状态卡片里的「协议」一行，选中即保存
+**协议在界面上是下拉框，两个 Tab 都能改**：面板状态卡片里的「协议」一行，选中即保存
 （`POST /config?profile=aimy|compat`，只传 `api`），改完服务端会按新协议重新挂载模型路由。
 预设档案只开放协议这一项，地址仍固化在配置里、只读展示；兼容模式则地址与协议都可改，
 只改协议时会保留已填地址。
@@ -234,7 +228,7 @@ src/
 再重建（`ProviderMount.api` 记录当前线路用于比较）。
 
 取值必须与 `@deepseek-ai/dsh-llm-pi-ai` 的 `supportedProtocols()` 完全一致，否则 pi-ai 的
-Config 校验会报 *names api …, which this build cannot serve*。设置页的协议下拉从
+Config 校验会报 *names api …, which this build cannot serve*。面板的协议下拉从
 `shared/types.ts` 的 `API_OPTIONS` 生成，新增协议只需改那一处。
 
 `normalizeApi()` 还接受常见别名（`responses` / `completions` / `anthropic` / `messages` /
@@ -254,7 +248,7 @@ OpenAI 系与 Anthropic 的 SDK 拼路径口径相反，所以插件按协议归
 会先被剥回根地址；我们自己的模型/分组拉取也会用 `apiRoot()` 做同样归整，
 所以不会出现 `/v1/v1/models`。
 
-因此设置页里填 `https://gateway.example.com` 或 `https://gateway.example.com/v1` 都能用。
+因此面板里填 `https://gateway.example.com` 或 `https://gateway.example.com/v1` 都能用。
 
 ## 切组后模型失效怎么处理
 
@@ -262,7 +256,7 @@ OpenAI 系与 Anthropic 的 SDK 拼路径口径相反，所以插件按协议归
 但已不在新分组的目录里，插件会：
 
 - 状态里置 `staleModel: true`，并附一条 warning：「当前选中的模型 xxx 不在新分组里，请重新选择模型」
-- 设置页显示红色提示行
+- 面板显示红色提示行
 
 **绝不自动改选模型**——静默替换会让用户在不知情的情况下换了计费对象。
 

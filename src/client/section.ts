@@ -36,7 +36,6 @@ const S = {
     flexDirection: 'column' as const,
     gap: 14,
   },
-  wrap: { maxWidth: 720, display: 'flex', flexDirection: 'column' as const, gap: 12 },
   tabs: { display: 'flex', gap: 6, borderBottom: '1px solid var(--dsw-alias-border-l2, rgba(128,128,128,.35))' },
   tab: {
     padding: '6px 12px',
@@ -76,7 +75,6 @@ const S = {
   },
   copyHover: { background: 'var(--dsw-alias-bg-layer-2, rgba(128,128,128,.16))', },
   copyIdle: { background: 'transparent' },
-  title: { fontSize: 14, fontWeight: 600 },
   titleRow: { display: 'flex', alignItems: 'center', gap: 8 },
   pageTitle: { fontSize: 18, fontWeight: 650, letterSpacing: '-0.01em' },
   mono: { fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace', fontSize: 12 },
@@ -172,17 +170,8 @@ function ratioText(ratio: number): string {
 /** 区段/面板标题：设置页分区名与侧栏面板名共用。 */
 const PANEL_TITLE = 'Aimy-艾米';
 
-export interface SectionOptions {
-  /**
-   * settings = 设置弹窗里的分区（紧凑、限宽 720）
-   * panel    = 首页左侧栏点开的整页面板（撑满主区、自带滚动）
-   */
-  variant?: 'settings' | 'panel';
-}
-
-export function makeSection(deps: SectionDeps, options: SectionOptions = {}) {
+export function makeSection(deps: SectionDeps) {
   const { h, useState, useEffect, useCallback, request } = deps;
-  const variant = options.variant ?? 'settings';
 
   /**
    * 当前 DSH 主题是否暗色。
@@ -483,9 +472,7 @@ export function makeSection(deps: SectionDeps, options: SectionOptions = {}) {
 
     /* ---- 头部：标题 + Tab ---- */
     const header = [
-      // 标题 + 品牌图标。设置页左侧 nav 的图标由宿主按 section id 硬编码
-      // （只认 account/models/agent-presets/plugins/archived-sessions，其余一律齿轮），
-      // 插件无法覆盖，所以把品牌图标放在分区内容里，至少让设置页里能看到它。
+      // 标题 + 品牌图标（与侧栏图标同一份 path）。
       h(
         'div',
         { key: 'title', style: S.titleRow },
@@ -493,8 +480,8 @@ export function makeSection(deps: SectionDeps, options: SectionOptions = {}) {
           'svg',
           {
             key: 'icon',
-            width: variant === 'panel' ? 22 : 18,
-            height: variant === 'panel' ? 22 : 18,
+            width: 22,
+            height: 22,
             viewBox: '0 0 24 24',
             fill: 'currentColor',
             style: { flex: 'none', opacity: 0.9 },
@@ -502,7 +489,7 @@ export function makeSection(deps: SectionDeps, options: SectionOptions = {}) {
           },
           h('path', { d: BRAND_ICON_PATH, fillRule: 'evenodd', clipRule: 'evenodd' }),
         ),
-        h('span', { style: variant === 'panel' ? S.pageTitle : S.title }, PANEL_TITLE),
+        h('span', { style: S.pageTitle }, PANEL_TITLE),
       ),
       h(
         'div',
@@ -725,13 +712,13 @@ export function makeSection(deps: SectionDeps, options: SectionOptions = {}) {
 
     const body = h(
       'div',
-      { style: variant === 'panel' ? S.page : S.wrap },
+      { style: S.page },
       ...header,
       statusCard,
       compatCard,
       keyCard,
       groupCard,
     );
-    return variant === 'panel' ? h('div', { style: S.panelRoot }, body) : body;
+    return h('div', { style: S.panelRoot }, body);
   };
 }

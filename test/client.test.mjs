@@ -156,15 +156,15 @@ describe('dsh-aimy client', () => {
     return tree;
   };
 
-  it('注册三处：设置分区 / 侧栏图标 / 主区面板', () => {
-    assert.ok(registry.entries.has('settings.section:onehub-relay'), '缺设置分区');
+  it('只注册两处：侧栏图标 + 主区面板（不再注册设置页分区）', () => {
     assert.ok(registry.entries.has('sidebar.panellist:dsh-aimy'), '缺侧栏图标');
     assert.ok(registry.entries.has('main:dsh-aimy'), '缺主区面板');
+    // 设置页分区已移除：宿主 nav 图标按 section id 硬编码，插件无法覆盖，
+    // 留一行齿轮不如只保留侧栏入口。
+    assert.equal(registry.entries.has('settings.section:onehub-relay'), false, '不应再注册设置页分区');
 
-    const section = registry.entries.get('settings.section:onehub-relay').options;
     const panel = registry.entries.get('sidebar.panellist:dsh-aimy').options;
     const main = registry.entries.get('main:dsh-aimy').options;
-    assert.equal(section.label(), 'Aimy-艾米');
     assert.equal(panel.label(), 'Aimy-艾米');
     assert.equal(panel.id, main.key, '侧栏 id 必须等于 main 的 key，否则点图标打不开面板');
   });
@@ -201,9 +201,9 @@ describe('dsh-aimy client', () => {
     assert.notEqual(inactive.props.style.opacity, tree.props.style.opacity);
   });
 
-  it('设置分区与面板头部都带品牌图标（宿主 nav 图标无法覆盖，只能放内容里）', async () => {
-    const Section = registry.entries.get('settings.section:onehub-relay').component;
-    const tree = await mount(Section);
+  it('面板头部带品牌图标', async () => {
+    const Panel = registry.entries.get('main:dsh-aimy').component;
+    const tree = await mount(Panel);
 
     const svgs = elements(tree).filter((el) => el.type === 'svg');
     assert.ok(svgs.length >= 1, '分区内容里应有品牌图标');

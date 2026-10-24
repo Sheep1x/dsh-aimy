@@ -1148,3 +1148,43 @@ describe('兼容性边界（README 与投稿描述所作的承诺）', () => {
     }
   });
 });
+
+
+describe('模型能力声明（cost / 思考档位）', () => {
+  it('插件写入 settings 的 provider 含 cost 与四档 reasoningEfforts', async () => {
+    const dshHome = mkdtempSync(join(tmpdir(), 'dsh-aimy-effort-'));
+    const relay = makeRelay({ supportsSwitch: false });
+    await new Promise((r) => relay.server.listen(0, '127.0.0.1', r));
+    const baseURL = 'http://127.0.0.1:' + relay.server.address().port;
+
+    const written = [];
+    const settings = {
+      describe: () => [{ ns: 'llm-pi-ai', revision: 1 }],
+      async update(ns, patch) { written.push({ ns, patch }); },
+      async mutate() {},
+    };
+    const llm = { listProviders: () => [{ id: 'onehub' }], listModels: async () => [{ id: 'model-a' }] };
+    try {
+      const plugin = await startPlugin(baseURL, dshHome, { settings, llm });
+      await json(plugin.base + '/refresh', { method: 'POST' });
+      await new Promise((r) => plugin.server.close(r));
+
+      const w = written.find((x) => x.patch?.providers?.onehub);
+      assert.ok(w, '应写入 providers.onehub');
+      const models = w.patch.providers.onehub.models;
+      assert.ok(Array.isArray(models) && models.length > 0);
+
+      for (const m of models) {
+        assert.ok(m.cost, 'model 必须带 cost：' + JSON.stringify(m));
+        assert.ok(m.reasoningEfforts, 'model 必须带 reasoningEfforts，否则没有档位可选：' + JSON.stringify(m));
+        assert.equal(m.reasoningEfforts.off, null, 'off 档应为 null（不发参数）');
+        for (const lv of ['low', 'medium', 'high']) {
+          assert.equal(m.reasoningEfforts[lv], lv, lv + ' 档应映射到同名线路值');
+        }
+      }
+    } finally {
+      await new Promise((r) => relay.server.close(r));
+      rmSync(dshHome, { recursive: true, force: true });
+    }
+  });
+});

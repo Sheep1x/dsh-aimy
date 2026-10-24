@@ -23,6 +23,27 @@ DSH（DeepSeek Harness）插件 **dsh-Aimy**：解决中转站多分组多倍率
 > 插件侧无法覆盖。借用已知 id 同样不可行——它们已被内置分区占用，重复 id 会让
 > `renderSlot(only: active)` 同时渲染两个分区。所以只保留侧栏入口，避免设置页出现一行齿轮。
 
+## 截图（市场详情页）
+
+市场（dsh-market）详情页会展示插件截图。**在你自己的仓库里声明**，改图无需再提 PR：
+
+```json
+// screenshots.json（与 package.json 同级）
+["assets/screenshots/01-panel.png", "assets/screenshots/02-group.png"]
+```
+
+- 放图目录：`assets/screenshots/`（见该目录下的 README）
+- 1–8 张；dsh-market 只展示**前 6 张**
+- 支持相对路径（不得以 `/` 开头、不得含 `..`），或 **GitHub 托管的 https 绝对 URL**
+  （`raw.githubusercontent.com` / `user-images.githubusercontent.com` /
+  `camo.githubusercontent.com` / `github.com`）。第三方图床会被拒——截图 URL 会带上访问者 IP
+- 未声明时市场会从本 README 自动抽取图片（回退行为）
+
+自检：`npm run check:screenshots`（校验格式、数量、主机白名单、文件是否存在）
+
+> 当前未声明 `screenshots.json`：保留「从 README 自动抽取」的回退。
+> 想显示真实面板截图时，把图放进 `assets/screenshots/` 再声明即可。
+
 ## 状态
 
 - ✅ P1：包骨架、host 路由、侧栏面板、分组读取与切换、旧版降级

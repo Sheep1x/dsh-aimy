@@ -25,7 +25,8 @@
   "scripts": {
     "build": "node build.mjs",
     "test": "node --test test/*.test.mjs",
-    "prepack": "node build.mjs"
+    "prepack": "node build.mjs",
+    "check:screenshots": "node scripts/check-screenshots.mjs"
   },
   "dsh": {
     "bundle": {

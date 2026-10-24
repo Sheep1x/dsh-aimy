@@ -18,8 +18,9 @@
     "locale",
     "cordis.patch.yml",
     "README.md",
-    "assets",
-    "LICENSE"
+    "LICENSE",
+    "assets/icon-180.png",
+    "assets/icon-512.png"
   ],
   "license": "MIT",
   "scripts": {

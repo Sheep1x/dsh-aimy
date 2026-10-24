@@ -14,9 +14,17 @@ DSH（DeepSeek Harness）插件 **dsh-Aimy**：解决中转站多分组多倍率
 | 首页左侧栏图标 + 主区面板「**Aimy-艾米**」 | `sidebar.panellist`（order 30）+ `main`（key `dsh-aimy`） | 整页面板，撑满主区、自带滚动 |
 
 - 两处共用同一个 `makeSection()`，只是 `variant` 不同（`settings` / `panel`）。
-- 侧栏图标是中转站官方 logo 的**矢量轮廓**（`RelayIcon`），走 `currentColor`，跟随主题与选中态。
-  路径不是手画的：把站点 `/logo-icon.png` 的 alpha 用 Moore 邻域追踪出闭合轮廓、
-  再经 Douglas-Peucker 简化为 60 点，与 256px 原图栅格比对 IoU 98.5%。
+- 侧栏图标是中转站官方 logo 的**加粗线稿**（`RelayIcon`），走 `currentColor`，跟随主题与选中态。
+  路径不是手画的：站点 `/logo-icon.png` 的深色描边 → 形态学膨胀（等效线宽 +1.5 视框单位）→
+  Moore 邻域闭合轮廓追踪 → Douglas-Peucker 简化，含内部孔洞（evenodd），与加粗掩码 IoU 95.3%。
+  数据在 `src/shared/brand.ts`，设置页分区标题旁复用同一份。
+
+> **设置页左侧 nav 的图标改不了**：宿主 `dsh-client-ui-settings-general` 的 `navIcon(id)` 按
+> 分区 id 硬编码，只认 `account` / `models` / `agent-presets` / `plugins` / `archived-sessions`，
+> 其余一律回落到齿轮（`IconSettingsOutlineMedium`）。`settings.section` 插槽只消费
+> `id`/`order`/`label`，从不读 `icon`，插件侧无法覆盖。改用这些 id 也不行——它们已被
+> 内置分区占用，重复 id 会让 `renderSlot(only: active)` 同时渲染两个分区。
+> 因此把品牌图标放在**分区内容**里（标题旁），见下图位置。
 - 面板 id、`main` 的 key、包名一致，都是 `dsh-aimy`；sidebar 点图标时把 `activePanelId` 设成该 id，`main` 据此命中。
 - 三条注册都在 `src/client/app.ts` 的 `apply()` 里，`inject = ['slots']`。
 - client 侧必须用 `react.createElement`（可变 children）；`react/jsx-runtime` 的 `jsx(type, props, key)` 第三参是 key，会把 `h(type, props, ...children)` 的子节点全部丢掉。

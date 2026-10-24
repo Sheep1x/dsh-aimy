@@ -201,6 +201,22 @@ describe('dsh-aimy client', () => {
     assert.notEqual(inactive.props.style.opacity, tree.props.style.opacity);
   });
 
+  it('设置分区与面板头部都带品牌图标（宿主 nav 图标无法覆盖，只能放内容里）', async () => {
+    const Section = registry.entries.get('settings.section:onehub-relay').component;
+    const tree = await mount(Section);
+
+    const svgs = elements(tree).filter((el) => el.type === 'svg');
+    assert.ok(svgs.length >= 1, '分区内容里应有品牌图标');
+
+    const brand = svgs.find((el) => {
+      const paths = elements(el).filter((p) => p.type === 'path');
+      return paths.some((p) => String(p.props.d ?? '').includes('M') && String(p.props.d ?? '').length > 200);
+    });
+    assert.ok(brand, '品牌图标的 path 数据应存在');
+    assert.equal(brand.props.fill, 'currentColor', '应跟随主题色');
+    assert.equal(brand.props.viewBox, '0 0 24 24');
+  });
+
   it('地址显示为默认中转站地址', async () => {
     const Panel = registry.entries.get('main:dsh-aimy').component;
     const tree = await mount(Panel);

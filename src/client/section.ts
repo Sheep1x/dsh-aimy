@@ -5,6 +5,7 @@
  *
  * 样式只用 CSS 变量 --dsw-alias-*（主题跟随亮/暗），不依赖 UI 组件库。
  */
+import { BRAND_ICON_PATH } from '../shared/brand';
 import { API_OPTIONS, DEFAULT_API, type PluginState, type ProfileId, type RelayApi } from '../shared/types';
 
 export interface SectionDeps {
@@ -76,6 +77,7 @@ const S = {
   copyHover: { background: 'var(--dsw-alias-bg-layer-2, rgba(128,128,128,.16))', },
   copyIdle: { background: 'transparent' },
   title: { fontSize: 14, fontWeight: 600 },
+  titleRow: { display: 'flex', alignItems: 'center', gap: 8 },
   pageTitle: { fontSize: 18, fontWeight: 650, letterSpacing: '-0.01em' },
   mono: { fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace', fontSize: 12 },
   hint: { fontSize: 12, opacity: 0.7, lineHeight: 1.5 },
@@ -481,7 +483,27 @@ export function makeSection(deps: SectionDeps, options: SectionOptions = {}) {
 
     /* ---- 头部：标题 + Tab ---- */
     const header = [
-      h('div', { key: 'title', style: variant === 'panel' ? S.pageTitle : S.title }, PANEL_TITLE),
+      // 标题 + 品牌图标。设置页左侧 nav 的图标由宿主按 section id 硬编码
+      // （只认 account/models/agent-presets/plugins/archived-sessions，其余一律齿轮），
+      // 插件无法覆盖，所以把品牌图标放在分区内容里，至少让设置页里能看到它。
+      h(
+        'div',
+        { key: 'title', style: S.titleRow },
+        h(
+          'svg',
+          {
+            key: 'icon',
+            width: variant === 'panel' ? 22 : 18,
+            height: variant === 'panel' ? 22 : 18,
+            viewBox: '0 0 24 24',
+            fill: 'currentColor',
+            style: { flex: 'none', opacity: 0.9 },
+            'aria-hidden': 'true',
+          },
+          h('path', { d: BRAND_ICON_PATH, fillRule: 'evenodd', clipRule: 'evenodd' }),
+        ),
+        h('span', { style: variant === 'panel' ? S.pageTitle : S.title }, PANEL_TITLE),
+      ),
       h(
         'div',
         { key: 'hint', style: S.hint },

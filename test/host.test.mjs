@@ -265,6 +265,14 @@ describe('dsh-aimy host routes', () => {
     assert.match(profile.baseURL, /\/v1$/);
     assert.equal(profile.apiKeyEnv, 'ONEHUB_API_KEY');
     assert.deepEqual(profile.models.map((m) => m.id), ['model-a', 'model-b']);
+    // 回归：pi-ai 的 calculateCost() 会读 model.cost.tiers，
+    // cost 缺失时抛 TypeError，整轮响应作废（界面上显示 PI_AI_ERROR）。
+    for (const m of profile.models) {
+      assert.ok(m.cost, '每个 model 必须带 cost，否则 pi-ai 计算用量时抛错：' + JSON.stringify(m));
+      for (const k of ['input', 'output', 'cacheRead', 'cacheWrite']) {
+        assert.equal(typeof m.cost[k], 'number', 'cost.' + k + ' 必须是数字');
+      }
+    }
     assert.equal(profile.defaultContextWindow, 131072);
     assert.equal(profile.defaultMaxTokens, 8192);
   });

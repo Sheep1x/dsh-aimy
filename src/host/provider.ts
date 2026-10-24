@@ -126,8 +126,23 @@ export function buildProfile(opts: ProviderOptions): Record<string, unknown> {
     apiKeyEnv: opts.apiKeyRef,
     defaultContextWindow: opts.defaultContextWindow,
     defaultMaxTokens: opts.defaultMaxTokens,
-    // 模型能力不猜：只声明 id，其余交给路由级默认值兜底
-    models: opts.models.map((m) => ({ id: m.id })),
+    /**
+     * 必须显式给 cost。
+     *
+     * pi-ai 的 calculateCost() 里是 `let rates = model.cost` 然后
+     * `model.cost.tiers ?? []` —— cost 缺失时不是"用默认值兜底"，
+     * 而是直接抛 TypeError: Cannot read properties of undefined (reading 'tiers')，
+     * 流里已经收到的文本全部作废，stopReason 停在 error，
+     * 界面上就是「Response incomplete without a provider reason / PI_AI_ERROR」。
+     *
+     * 这张表是「我们自己的中转站，不掌握上游定价」的如实表达：
+     * 全 0 表示不参与计费估算，而不是声称免费。
+     */
+    models: opts.models.map((m) => ({
+      id: m.id,
+      ...(m.name === undefined ? {} : { name: m.name }),
+      cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+    })),
   };
 }
 

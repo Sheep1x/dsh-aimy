@@ -39,7 +39,12 @@ Ok '干净'
 
 # ── 2. 版本与远端一致性 ──────────────────────────────────────
 Step 2 '检查版本与远端'
-$version = (Get-Content package.json -Raw | ConvertFrom-Json).version
+$version = $null
+# 显式按 UTF-8 读：PowerShell 5.1 的 Get-Content 默认按 ANSI 解码，
+# package.json 含中文描述，会变乱码并让 ConvertFrom-Json 直接失败。
+$pkgPath = Join-Path $repo 'package.json'
+$pkgJson = [IO.File]::ReadAllText($pkgPath, [Text.UTF8Encoding]::new($false))
+try { $version = ($pkgJson | ConvertFrom-Json).version } catch { Die "package.json 解析失败：$($_.Exception.Message)" }
 Write-Host "    本版本：$version"
 git fetch origin --quiet 2>$null
 $ahead = git log --oneline 'origin/main..HEAD'

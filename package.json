@@ -1,6 +1,6 @@
 {
   "name": "dsh-aimy",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "dsh-Aimy — 解决中转站多分组多倍率不方便管理的问题：提供分组接口的站点可就地切组并同步刷新模型与倍率，缺少该接口的站点自动降级为只读（兼容 new-api / sub2api）",
   "type": "module",
   "main": "lib/index.js",
@@ -17,10 +17,12 @@
     "lib",
     "locale",
     "cordis.patch.yml",
+    "screenshots.json",
     "README.md",
     "LICENSE",
     "assets/icon-180.png",
-    "assets/icon-512.png"
+    "assets/icon-512.png",
+    "assets/screenshots"
   ],
   "license": "MIT",
   "scripts": {
@@ -62,15 +64,21 @@
     "type": "git",
     "url": "git+https://github.com/Sheep1x/dsh-aimy.git"
   },
+  "bugs": {
+    "url": "https://github.com/Sheep1x/dsh-aimy/issues"
+  },
   "homepage": "https://github.com/Sheep1x/dsh-aimy",
   "keywords": [
     "dsh",
+    "dsh-plugin",
     "deepseek-harness",
     "plugin",
     "one-hub",
     "relay",
     "new-api",
-    "sub2api"
+    "sub2api",
+    "llm",
+    "model-provider"
   ],
   "icon": "assets/icon-180.png",
   "author": "Sheep1x"

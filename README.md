@@ -51,11 +51,21 @@ DSH（DeepSeek Harness）插件 **dsh-Aimy**：解决中转站多分组多倍率
 - ✅ P4-1：面板里直接填密钥（写 DSH 凭据库，write-only），保存后立即探测并挂载模型
 - ✅ P4-2：「当前选中模型不在新分组」提示（只提示，不自动改选）
 - ✅ 双档案：Aimy-艾米（地址隐藏的预设）+ 兼容模式（自填 URL/协议，适配 new-api / sub2api）
-- ⏳ 可选：插件市场打包（index 格式 + submission 校验）
+- ✅ 模型能力声明：逐模型标注 1M 上下文与文本/图片输入，面板可开关图片
+- ✅ 已发布 npm：`dsh-aimy`
 
 ## 安装
 
-### 一条命令（DSH 自带 CLI）
+### 一条命令（npm，推荐）
+
+```bash
+dsh plugin --profile desktop add dsh-aimy
+```
+
+发到 npm 的是**预构建包**（`lib/` 已在包内），安装时不跑构建脚本，**不会**停在
+`ERR_PNPM_IGNORED_BUILDS` / `allowBuilds` 授权那一步。
+
+### 一条命令（GitHub 源码）
 
 ```bash
 dsh plugin --profile desktop add github:Sheep1x/dsh-aimy
@@ -63,9 +73,11 @@ dsh plugin --profile desktop add github:Sheep1x/dsh-aimy
 
 - `--profile` **不能省**：DSH 的 `plugin` 子命令要求显式指定 profile（省略会报 `--profile <name> is required`）。
 - 这条命令把参数原样转发给 profile 目录下的 pnpm，装完仍需把 `dsh-aimy` 加进 `dsh.profile.bundles`（见下）。
-- 仓库提交了 `lib/`，安装即得可加载的包，**不需要** `allowBuilds` 构建授权。
+- 仓库提交了 `lib/`，安装即得可加载的包。但 **GitHub 来源仍可能触发 pnpm 的构建授权检查**，
+  若停在 `ERR_PNPM_GIT_DEP_PREPARE_NOT_ALLOWED`，把提示的键名加进该 profile 的
+  `pnpm-workspace.yaml` 的 `allowBuilds` 后重试；改用上面的 npm 命令可完全避开这一步。
 
-### 方式一：npm 直接从 GitHub 安装（推荐，无需发布到 registry）
+### 方式一：pnpm 从 GitHub 安装（无需走 registry）
 
 ```bash
 cd ~/.dsh/profiles/desktop
@@ -79,6 +91,8 @@ pnpm add github:Sheep1x/dsh-aimy      # 或 npm i github:Sheep1x/dsh-aimy
 > 仓库**提交了构建产物 `lib/`**，所以源码安装（`dsh plugin add` / `pnpm add github:…` / `file:`）拿到的就是可直接加载的包，
 > 不依赖 `prepare` 在装机时构建（`file:` 与 `dsh plugin add` 都不会跑 `prepare`）。
 > 改完源码请 `node build.mjs` 并**一起提交 `lib/`**，否则用户装到的是旧代码。
+>
+> 想锁定版本可以用 `github:Sheep1x/dsh-aimy#<commit-sha>`。
 
 ### 方式二：本地路径
 
@@ -93,7 +107,7 @@ git clone https://github.com/Sheep1x/dsh-aimy.git
 cd dsh-aimy
 npm install        # 装 esbuild 等构建依赖
 npm run build      # 产出 lib/index.js 与 lib/client.js
-npm test           # 31 项测试（host 27 + client 4）
+npm test           # 60 项测试（host 48 + client 12）
 ```
 
 然后在 DSH profile 里装本地目录，并把 `dsh-aimy` 加进 `dsh.profile.bundles`（`~/.dsh/profiles/<profile>/package.json`）。
@@ -216,10 +230,13 @@ host 半侧在 `/dsh-aimy-relay` 前缀下暴露（仅供本插件的浏览器�
   - 侧栏图标是 svg 且跟随 `size`/`active`
   - 面板展示默认地址并标注「预设地址（不可修改）」
   - 点地址 → 写剪贴板 → 提示「已复制」
+  - 协议下拉三选项齐全、暗色适配、切换会 POST 保存
+  - 图片输入开关默认勾选、取消后只提交 `{imageInput}`
 
-host 覆盖（27 项）：正常读取 / 真实切组 / 模型路由挂载 / 切组后重挂载 / 同分组不重挂载 / 中转站报错透传 /
+host 覆盖（48 项）：正常读取 / 真实切组 / 模型路由挂载 / 切组后重挂载 / 同分组不重挂载 / 中转站报错透传 /
 空分组拦截 / 旧版站点降级 / 未配置密钥 / 保存密钥后自动挂载 / 空密钥拒绝 / 清除密钥 /
-模型失效判定（在目录内 / 切走后失效 / 切回恢复 / 指向别的路由不误报）。
+模型失效判定（在目录内 / 切走后失效 / 切回恢复 / 指向别的路由不误报）/
+模型能力声明（1M 上下文 + 文本/图片模态 + cost + 思考档位）/ 关掉图片开关后只声明 text 并落盘。
 
 ## 结构
 

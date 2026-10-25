@@ -1,4 +1,4 @@
-<img src="assets/icon-180.png" width="72" align="right" alt="dsh-Aimy">
+﻿<img src="assets/icon-180.png" width="72" align="right" alt="dsh-Aimy">
 
 # dsh-Aimy
 
@@ -107,7 +107,7 @@ git clone https://github.com/Sheep1x/dsh-aimy.git
 cd dsh-aimy
 npm install        # 装 esbuild 等构建依赖
 npm run build      # 产出 lib/index.js 与 lib/client.js
-npm test           # 60 项测试（host 48 + client 12）
+npm test           # 65 项测试（host 51 + client 14）
 ```
 
 然后在 DSH profile 里装本地目录，并把 `dsh-aimy` 加进 `dsh.profile.bundles`（`~/.dsh/profiles/<profile>/package.json`）。
@@ -165,7 +165,28 @@ pnpm add file:D:/openwork/one-hub/dsh-aimy
     baseURL: https://aimy.sheep1x.top   # 中转站根地址（不要带 /v1）
     apiKeyRef: ONEHUB_API_KEY           # 凭据引用名
     group: ''                            # 期望分组（空 = 跟随令牌）
+    probeModels: false                   # 刷新目录后探测可达性（见下）
 ```
+
+### 模型可达性探测（默认关闭）
+
+中转站偶尔会「目录里有、调用报 model not found」。开启 `probeModels` 后，每次刷新目录会为
+每个模型发一条 `max_tokens: 1` 的最小生成请求，把结果写进状态里的 `reachability`：
+
+| 判定 | 触发条件 | 含义 |
+| --- | --- | --- |
+| `ok` | 请求成功 | 上游认这个 id |
+| `unavailable` | 404 / `Model is unavailable` / `invalid model` | 上游明确否定，选择器里不该出现 |
+| `unknown` | 401、403、429、5xx、超时、断网 | **对链路的状态描述，不是对模型的否定** |
+
+`unknown` 单独记账是关键：把 5xx 或限流也算成「不可用」，会让用户在一场网络抖动后
+丢掉整个模型目录。面板上两者分开显示（「N 个不可用」「N 个未确认」），悬停可看说明。
+
+**探测不裁剪目录**——`models` 始终是完整列表，判死只是标注。是否真的移除模型交给
+DSH 的选择器策略，本插件不代替用户做这个决定。
+
+代价：N 个模型 = N 条请求（默认并发 4）。站点模型多或配额紧时保持关闭。
+
 
 密钥**不写进配置文件**：优先级是
 
@@ -233,7 +254,7 @@ host 半侧在 `/dsh-aimy-relay` 前缀下暴露（仅供本插件的浏览器�
   - 协议下拉三选项齐全、暗色适配、切换会 POST 保存
   - 图片输入开关默认勾选、取消后只提交 `{imageInput}`
 
-host 覆盖（48 项）：正常读取 / 真实切组 / 模型路由挂载 / 切组后重挂载 / 同分组不重挂载 / 中转站报错透传 /
+host 覆盖（51 项）：正常读取 / 真实切组 / 模型路由挂载 / 切组后重挂载 / 同分组不重挂载 / 中转站报错透传 /
 空分组拦截 / 旧版站点降级 / 未配置密钥 / 保存密钥后自动挂载 / 空密钥拒绝 / 清除密钥 /
 模型失效判定（在目录内 / 切走后失效 / 切回恢复 / 指向别的路由不误报）/
 模型能力声明（1M 上下文 + 文本/图片模态 + cost + 思考档位）/ 关掉图片开关后只声明 text 并落盘。
@@ -347,6 +368,11 @@ provider 级再兜一层 `defaultInput`。注意这不只是标签：`dsh-compac
 溢出判定、用量压力百分比都是拿 `contextWindow` 算的，131072 → 1000000 会让压缩推迟约 7.6 倍。
 图片模态由面板上的「图片输入」开关控制（默认开），关掉后模型只声明 `text`，
 贴图会在附件阶段就被拒绝，而不是等上游在整轮中途报错。
+
+⚠️ **这两个值是本插件标的默认值，不是上游确认的能力。** 中转站 `/v1/models` 只返回
+模型 id，不提供窗口长度与模态，所以 1M 与 text/image 都是假设——面板「能力声明来源」
+一行把这件事写在界面上，避免用户以为站点确认过。若某个模型实际窗口更小，撞墙的是用户
+而不是插件，这一点值得提前说清楚。
 
 **为什么切组要重挂载**：pi-ai 的 `providers` 是 schemastery 的 volatile 字段，但
 `createVolatile()` 返回的是**冻结快照**，写入通道是内部 symbol（只有 Loader 能提交），

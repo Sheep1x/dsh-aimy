@@ -182,6 +182,7 @@ async function startPlugin(baseURL, dshHome, options = {}) {
     baseURL,
     apiKeyRef: 'ONEHUB_API_KEY',
     providerAdapter: adapterUrl,
+    ...(options.config ?? {}),
   });
   const registered = getRegistered();
   assert.ok(registered, 'webServer.register 未被调用');
@@ -1272,6 +1273,131 @@ describe('模型能力声明（上下文 / 模态 / cost / 思考档位）', () 
       assert.equal(saved.aimy.api, 'openai-responses', '只改开关不该顺手改协议');
 
       await new Promise((r) => plugin.server.close(r));
+    } finally {
+      await new Promise((r) => relay.server.close(r));
+      rmSync(dshHome, { recursive: true, force: true });
+    }
+  });
+});
+
+/**
+ * 模型可达性探测：目录里声明了、但上游明确拒绝路由的模型不该出现在选择器里。
+ *
+ * 关键区分（照搬上游实践）：
+ *   - 明确拒绝（404 / "Model is unavailable"）→ 判定不可用
+ *   - 暂时性故障（5xx / 429 / 超时 / 断网）→ 保持可达，不误判
+ */
+describe('模型可达性探测', () => {
+  /** 造一个能按模型决定探测响应的假中转站。 */
+  function makeProbeRelay(behaviour) {
+    const state = { group: 'default', probes: [] };
+    const models = Object.keys(behaviour);
+    const server = createServer((req, res) => {
+      const url = new URL(req.url ?? '/', 'http://localhost');
+      const auth = req.headers.authorization ?? '';
+      if (auth !== 'Bearer ' + KEY) {
+        res.writeHead(401, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ success: false, message: '无效的令牌' }));
+        return;
+      }
+      if (url.pathname === '/v1/models') {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ object: 'list', data: models.map((id) => ({ id, object: 'model' })) }));
+        return;
+      }
+      if (url.pathname === '/v1/token/group' && req.method === 'GET') {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ success: true, data: { group: state.group, groups: [{ symbol: 'default', ratio: 1 }] } }));
+        return;
+      }
+      if (url.pathname === '/v1/chat/completions') {
+        let raw = '';
+        req.on('data', (c) => { raw += c; });
+        req.on('end', () => {
+          let model = '';
+          try { model = JSON.parse(raw)?.model ?? ''; } catch { /* ignore */ }
+          state.probes.push(model);
+          const b = behaviour[model];
+          if (!b || ((b.status ?? 200) === 200)) {
+            res.writeHead(200, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ choices: [{ message: { content: 'ok' } }] }));
+            return;
+          }
+          res.writeHead(b.status, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: { message: b.message ?? 'error' } }));
+        });
+        return;
+      }
+      res.writeHead(404, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: { message: 'not found' } }));
+    });
+    return { server, state };
+  }
+
+  it('明确拒绝的模型判为 unavailable，暂时性故障保持 unknown', async () => {
+    const dshHome = mkdtempSync(join(tmpdir(), 'dsh-aimy-probe-'));
+    const relay = makeProbeRelay({
+      'model-ok': {},
+      'model-gone': { status: 404, message: 'Model is unavailable' },
+      'model-5xx': { status: 500, message: 'upstream boom' },
+      'model-429': { status: 429, message: 'rate limited' },
+    });
+    await new Promise((r) => relay.server.listen(0, '127.0.0.1', r));
+    const baseURL = 'http://127.0.0.1:' + relay.server.address().port;
+
+    try {
+      const plugin = await startPlugin(baseURL, dshHome, { config: { probeModels: true } });
+      const { body } = await json(plugin.base + '/refresh', { method: 'POST' });
+      await new Promise((r) => plugin.server.close(r));
+
+      const reach = body.data.reachability;
+      assert.ok(reach, '状态里应带 reachability：' + JSON.stringify(body.data).slice(0, 300));
+      assert.equal(reach['model-ok'], 'ok', '正常模型应判为 ok');
+      assert.equal(reach['model-gone'], 'unavailable', '404 应判为 unavailable');
+      assert.equal(reach['model-5xx'], 'unknown', '5xx 是网关故障，不能判成不可用');
+      assert.equal(reach['model-429'], 'unknown', '429 是限流，不能判成不可用');
+    } finally {
+      await new Promise((r) => relay.server.close(r));
+      rmSync(dshHome, { recursive: true, force: true });
+    }
+  });
+
+  it('默认不探测：不发多余的生成请求', async () => {
+    const dshHome = mkdtempSync(join(tmpdir(), 'dsh-aimy-noprobe-'));
+    const relay = makeProbeRelay({ 'model-a': {}, 'model-b': {} });
+    await new Promise((r) => relay.server.listen(0, '127.0.0.1', r));
+    const baseURL = 'http://127.0.0.1:' + relay.server.address().port;
+
+    try {
+      const plugin = await startPlugin(baseURL, dshHome);
+      const { body } = await json(plugin.base + '/refresh', { method: 'POST' });
+      await new Promise((r) => plugin.server.close(r));
+
+      assert.equal(body.data.reachability, undefined, '没开探测时不该有 reachability');
+      assert.deepEqual(relay.state.probes, [], '没开探测时不该打生成请求，实际：' + relay.state.probes.join(','));
+    } finally {
+      await new Promise((r) => relay.server.close(r));
+      rmSync(dshHome, { recursive: true, force: true });
+    }
+  });
+
+  it('探测不会裁剪模型目录', async () => {
+    const dshHome = mkdtempSync(join(tmpdir(), 'dsh-aimy-probe-keep-'));
+    const relay = makeProbeRelay({
+      'model-a': {},
+      'model-gone': { status: 404, message: 'Model is unavailable' },
+    });
+    await new Promise((r) => relay.server.listen(0, '127.0.0.1', r));
+    const baseURL = 'http://127.0.0.1:' + relay.server.address().port;
+
+    try {
+      const plugin = await startPlugin(baseURL, dshHome, { config: { probeModels: true } });
+      const { body } = await json(plugin.base + '/refresh', { method: 'POST' });
+      await new Promise((r) => plugin.server.close(r));
+
+      const ids = body.data.models.map((m) => m.id).sort();
+      assert.deepEqual(ids, ['model-a', 'model-gone'], '判死只是标注，目录要保留完整');
+      assert.equal(body.data.reachability['model-gone'], 'unavailable');
     } finally {
       await new Promise((r) => relay.server.close(r));
       rmSync(dshHome, { recursive: true, force: true });

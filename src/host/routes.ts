@@ -1,5 +1,5 @@
 /** /dsh-aimy-relay/* 的业务实现：纯函数式编排，便于脱离 Cordis 单测。 */
-import { RelayError, fetchModels, fetchTokenGroup, switchTokenGroup, type RelayOptions } from './relay';
+import { RelayError, fetchModels, fetchTokenGroup, probeModels, switchTokenGroup, type RelayOptions } from './relay';
 import type { ProviderMount } from './provider';
 import type { CatalogStore } from './state';
 import {
@@ -27,6 +27,8 @@ export interface RouteDeps {
   remountProvider?: (models: import('../shared/types').RelayModel[]) => Promise<{ ok: boolean; error?: string }>;
   /** 目录变化后同步给 provider（挂载或重挂载）；失败只记录不抛 */
   syncProvider?: (models: import('../shared/types').RelayModel[]) => Promise<{ ok: boolean; error?: string }>;
+  /** 是否在刷新目录后探测模型可达性（成本极低，但会多打几条请求）*/
+  probeModels?: boolean;
   fetchImpl?: typeof fetch;
 }
 
@@ -128,6 +130,13 @@ export async function readState(deps: RouteDeps, refresh = false): Promise<Plugi
     state.models = models;
     state.modelsFetchedAt = fetchedAt;
     state.connected = true;
+
+    // 探测放在挂载之前：先把「上游到底认不认这个 id」弄清楚，
+    // 但**不因此裁剪目录** —— 判死的只是标注，挂载仍按完整目录来，
+    // 否则一次探测抖动会让模型从选择器里消失。
+    if (deps.probeModels) {
+      state.reachability = await probeModels(opts(deps), models);
+    }
 
     const synced = await deps.syncProvider?.(models);
     state.provider = providerState(deps, synced && !synced.ok ? synced.error : undefined, deps.routeName);

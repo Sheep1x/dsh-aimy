@@ -12,6 +12,19 @@ export interface RelayModel {
   name?: string;
 }
 
+/**
+ * 单个模型的可达性判定。
+ *
+ * 与「可用/不可用」二分不同，这里刻意保留 `unknown`：网关 5xx、限流 429、
+ * 超时、断网都**不能**说明模型不存在，把它们判成不可用会让用户在一场网络
+ * 抖动后丢掉整个模型目录。只有上游明确否定（404 / Model is unavailable）
+ * 才判成 `unavailable`。
+ */
+export type ModelReachability = 'ok' | 'unavailable' | 'unknown';
+
+/** 模型 id → 可达性。只在开启探测时出现。 */
+export type ReachabilityMap = Record<string, ModelReachability>;
+
 /** 中转站令牌分组状态：对应 GET /v1/token/group 的 data。 */
 export interface TokenGroupState {
   group: string;
@@ -92,6 +105,11 @@ export interface PluginState {
   token: TokenGroupState | null;
   models: RelayModel[];
   modelsFetchedAt: number;
+  /**
+   * 模型可达性（仅在开启 `probeModels` 时出现）。
+   * `unavailable` 的模型仍在 `models` 里，但界面会标注并排除在选择之外。
+   */
+  reachability?: ReachabilityMap;
   provider: ProviderState | null;
   credential: CredentialStatus | null;
   /** 当前默认模型选择 */

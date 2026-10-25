@@ -1,5 +1,5 @@
 /** 中转站 HTTP 客户端：只做「请求 + 反序列化 + 错误归一」，不做业务编排。 */
-import type { RelayModel, TokenGroupState } from '../shared/types';
+import type { ReachabilityMap, RelayModel, TokenGroupState } from '../shared/types';
 
 export class RelayError extends Error {
   constructor(
@@ -168,4 +168,70 @@ export async function fetchModels(opts: RelayOptions): Promise<RelayModel[]> {
   }
   models.sort((a, b) => a.id.localeCompare(b.id));
   return models;
+}
+
+/**
+ * 判断一次探测失败是否等于「这个模型不存在」。
+ *
+ * 上游对「不路由这个 id」的表述不统一：OpenAI 系常见 404 + `model_not_found`，
+ * new-api / one-hub 会把上游原话透传成 `Model is unavailable`，也见过
+ * 400 + `invalid model`。这些都属于**对模型的否定**。
+ *
+ * 反过来，401/403（凭据问题）、429（限流）、5xx（网关故障）、超时与断网
+ * 都是**对链路的状态描述**，换个时间重试可能就好了 —— 一律不判死。
+ */
+function deniesModel(error: RelayError): boolean {
+  if (error.kind === 'not-found') return true;
+  if (error.status === 400) {
+    return /model.*(not|un)?(found|available)|invalid model|no such model|unknown model/i.test(error.message);
+  }
+  return false;
+}
+
+/**
+ * 探测模型可达性。
+ *
+ * 用一次最小成本的生成请求判断上游到底认不认这个 id：`max_tokens: 1` +
+ * 固定单字输入，成本可以忽略。不做流式，只要能拿到状态码即可。
+ *
+ * 并发度刻意压得很低（默认 4）：中转站通常有速率限制，探测本身不该把
+ * 用户当轮的正常调用挤掉。
+ *
+ * 探测失败**绝不抛出**——它只是给目录加一层标注，任何异常都退化成 `unknown`。
+ */
+export async function probeModels(
+  opts: RelayOptions,
+  models: RelayModel[],
+  concurrency = 4,
+): Promise<ReachabilityMap> {
+  const result: ReachabilityMap = {};
+  const queue = [...models];
+
+  const worker = async (): Promise<void> => {
+    for (;;) {
+      const next = queue.shift();
+      if (!next) return;
+      try {
+        await request<unknown>(opts, '/v1/chat/completions', {
+          method: 'POST',
+          body: JSON.stringify({
+            model: next.id,
+            messages: [{ role: 'user', content: 'ping' }],
+            max_tokens: 1,
+            stream: false,
+          }),
+        });
+        result[next.id] = 'ok';
+      } catch (error) {
+        if (error instanceof RelayError && deniesModel(error)) {
+          result[next.id] = 'unavailable';
+        } else {
+          result[next.id] = 'unknown';
+        }
+      }
+    }
+  };
+
+  await Promise.all(Array.from({ length: Math.min(concurrency, models.length) }, worker));
+  return result;
 }

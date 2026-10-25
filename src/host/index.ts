@@ -57,6 +57,12 @@ export interface Config {
   defaultMaxTokens?: number;
   /** 默认为模型声明图片输入（面板有开关，落盘到 profiles.json）*/
   imageInput?: boolean;
+  /**
+   * 刷新目录后探测模型可达性（默认关闭）。
+   * 开一次目录会多打 N 条 max_tokens:1 的请求，适合站点模型不多、且经常
+   * 出现「目录里有但调用报 model not found」的情况。
+   */
+  probeModels?: boolean;
   providerAdapter?: string;
   /** 仅调试用：直接内联密钥（不落盘、不推荐）*/
   apiKey?: string;
@@ -498,6 +504,7 @@ export function apply(ctx: any, config?: Config): void {
       provider: mounts.get(profile.id) ?? settingsMountShim(profile.id),
       syncProvider: (models) => syncProvider(profile, models),
       remountProvider: (models) => remountProvider(profile, models),
+      probeModels: cfg.probeModels === true,
       credential: await describeCredential(ctx, profile.apiKeyRef),
       selection: readSelection(ctx),
     };

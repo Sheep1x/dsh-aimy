@@ -419,4 +419,44 @@ describe('dsh-aimy client', () => {
     assert.equal(box.props.checked, false, '服务端说关了，复选框就不该勾选');
     assert.ok(textOf(tree).includes('已关闭'), '应提示当前是关闭状态');
   });
+
+  it('能力声明标注来源：面板说明 1M 与图片是插件默认值而非上游确认', async () => {
+    globalThis.fetch = async () => ({
+      text: async () => JSON.stringify({ success: true, data: stateBody }),
+    });
+
+    const Panel = registry.entries.get('main:dsh-aimy').component;
+    const tree = await mount(Panel);
+    const text = textOf(tree);
+
+    // 中转站 /v1/models 只给 id，窗口与模态是我们标的默认值。
+    // 不写明来源的话，用户会以为这是站点确认过的能力。
+    assert.ok(
+      text.includes('上游未提供') || text.includes('插件默认标注'),
+      '应说明能力声明的来源，实际文本：' + text.slice(0, 600),
+    );
+    assert.ok(text.includes('1M'), '应提到 1M 上下文');
+  });
+
+  it('有探测结果时显示不可用模型计数', async () => {
+    globalThis.fetch = async () => ({
+      text: async () => JSON.stringify({
+        success: true,
+        data: {
+          ...stateBody,
+          connected: true,
+          models: [{ id: 'model-a' }, { id: 'model-gone' }, { id: 'model-5xx' }],
+          reachability: { 'model-a': 'ok', 'model-gone': 'unavailable', 'model-5xx': 'unknown' },
+        },
+      }),
+    });
+
+    const Panel = registry.entries.get('main:dsh-aimy').component;
+    const tree = await mount(Panel);
+    const text = textOf(tree);
+
+    assert.ok(text.includes('1 个不可用') || text.includes('1 个未确认不可用'), '应报出不可用计数，实际：' + text.slice(0, 600));
+    // 暂时性故障不能算进不可用
+    assert.ok(!text.includes('2 个不可用'), '5xx/429 不该被算成不可用');
+  });
 });

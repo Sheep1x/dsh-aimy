@@ -167,6 +167,28 @@ function ratioText(ratio: number): string {
   return '×' + (Number.isFinite(ratio) ? ratio : 1).toFixed(2);
 }
 
+/**
+ * 可达性摘要文案。
+ *
+ * 只有 `unavailable`（上游明确否定这个 id）才算不可用；`unknown`
+ * （5xx / 429 / 超时 / 断网）单独记账但措辞上不判死 —— 它换个时间可能就好了，
+ * 混进「不可用」会让用户在一次网络抖动后误删模型。
+ *
+ * 返回纯文案，由调用处决定怎么渲染（这里不碰 React，模块级函数拿不到 h）。
+ */
+function reachSummary(state: PluginState | null): string | null {
+  const reach = state?.reachability;
+  if (!reach) return null;
+  const values = Object.values(reach);
+  const bad = values.filter((v) => v === 'unavailable').length;
+  const shaky = values.filter((v) => v === 'unknown').length;
+  if (bad === 0 && shaky === 0) return null;
+  const parts: string[] = [];
+  if (bad > 0) parts.push(bad + ' 个不可用');
+  if (shaky > 0) parts.push(shaky + ' 个未确认');
+  return parts.join('，');
+}
+
 /** 区段/面板标题：设置页分区名与侧栏面板名共用。 */
 const PANEL_TITLE = 'Aimy-艾米';
 
@@ -576,6 +598,16 @@ export function makeSection(deps: SectionDeps) {
             : '已开启（文本 + 图片）· 上下文窗口按 1M 标注',
         ),
       ),
+      /*
+       * 能力声明的来源必须写明：/v1/models 只返回 id，1M 与模态是本插件
+       * 标上去的默认值，不是站点确认过的能力。用户据此判断能不能贴图、
+       * 会不会撞上下文墙——把这个混淆了，代价很实。
+       */
+      h(
+        'div',
+        { style: S.hint },
+        '能力声明来源：中转站 /v1/models 只返回模型 id，1M 上下文与图片输入均由本插件默认标注，非上游确认。',
+      ),
       h(
         'div',
         { style: S.row },
@@ -599,6 +631,9 @@ export function makeSection(deps: SectionDeps) {
               current ? current + '（' + ratioText(token ? token.ratio : 1) + '）' : '—',
             ),
             h('span', { style: S.hint }, state ? '模型 ' + state.models.length + ' 个' : ''),
+            reachSummary(state)
+              ? h('span', { style: S.err, title: '「未确认」是网关故障或限流，不代表模型不存在' }, reachSummary(state) as string)
+              : null,
           ),
       h(
         'div',

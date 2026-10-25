@@ -25,10 +25,12 @@ function Step($n, $msg) { Write-Host "`n[$n] $msg" -ForegroundColor Cyan }
 function Ok($msg) { Write-Host "    OK  $msg" -ForegroundColor Green }
 function Die($msg) { Write-Host "    FAIL  $msg" -ForegroundColor Red; exit 1 }
 
-# npm 走代理；直连 registry.npmjs.org 在部分网络下会超时。
+# npm 与 git 都走代理：直连 registry.npmjs.org / github.com 在部分网络下会超时。
 if ($Proxy) {
   $env:npm_config_proxy = $Proxy
   $env:npm_config_https_proxy = $Proxy
+  $env:HTTP_PROXY = $Proxy
+  $env:HTTPS_PROXY = $Proxy
 }
 
 # ── 1. 工作区必须是干净的 ────────────────────────────────────

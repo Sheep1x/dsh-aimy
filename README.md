@@ -1,4 +1,4 @@
-﻿<img src="assets/icon-180.png" width="72" align="right" alt="dsh-Aimy">
+<img src="assets/icon-180.png" width="72" align="right" alt="dsh-Aimy">
 
 # dsh-Aimy
 
@@ -107,7 +107,7 @@ git clone https://github.com/Sheep1x/dsh-aimy.git
 cd dsh-aimy
 npm install        # 装 esbuild 等构建依赖
 npm run build      # 产出 lib/index.js 与 lib/client.js
-npm test           # 65 项测试（host 51 + client 14）
+npm test           # 68 项测试（host 54 + client 14）
 ```
 
 然后在 DSH profile 里装本地目录，并把 `dsh-aimy` 加进 `dsh.profile.bundles`（`~/.dsh/profiles/<profile>/package.json`）。
@@ -171,7 +171,13 @@ pnpm add file:D:/openwork/one-hub/dsh-aimy
 ### 模型可达性探测（默认关闭）
 
 中转站偶尔会「目录里有、调用报 model not found」。开启 `probeModels` 后，每次刷新目录会为
-每个模型发一条 `max_tokens: 1` 的最小生成请求，把结果写进状态里的 `reachability`：
+每个模型发一条最小生成请求（`max_tokens: 1`），把结果写进状态里的 `reachability`。
+
+**探测端点跟随该档案的线路协议**，与真实调用同一套口径：`openai-responses` → `POST /v1/responses`
+（`{ input, max_output_tokens }`）、`openai-completions` → `POST /v1/chat/completions`
+（`{ messages, max_tokens }`）、`anthropic-messages` → `POST /v1/messages`
+（`{ messages, max_tokens }` + `anthropic-version` 头）。早先的实现固定打 chat/completions，
+在 responses 线路下会把只支持 Responses 的中转站误判成模型不可用。
 
 | 判定 | 触发条件 | 含义 |
 | --- | --- | --- |
@@ -254,10 +260,11 @@ host 半侧在 `/dsh-aimy-relay` 前缀下暴露（仅供本插件的浏览器�
   - 协议下拉三选项齐全、暗色适配、切换会 POST 保存
   - 图片输入开关默认勾选、取消后只提交 `{imageInput}`
 
-host 覆盖（51 项）：正常读取 / 真实切组 / 模型路由挂载 / 切组后重挂载 / 同分组不重挂载 / 中转站报错透传 /
+host 覆盖（54 项）：正常读取 / 真实切组 / 模型路由挂载 / 切组后重挂载 / 同分组不重挂载 / 中转站报错透传 /
 空分组拦截 / 旧版站点降级 / 未配置密钥 / 保存密钥后自动挂载 / 空密钥拒绝 / 清除密钥 /
 模型失效判定（在目录内 / 切走后失效 / 切回恢复 / 指向别的路由不误报）/
-模型能力声明（1M 上下文 + 文本/图片模态 + cost + 思考档位）/ 关掉图片开关后只声明 text 并落盘。
+模型能力声明（1M 上下文 + 文本/图片模态 + cost + 思考档位）/ 关掉图片开关后只声明 text 并落盘 /
+探测端点跟随线路协议（responses / completions / anthropic 三条回归）。
 
 ## 结构
 

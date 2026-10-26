@@ -1290,7 +1290,7 @@ describe('模型能力声明（上下文 / 模态 / cost / 思考档位）', () 
 describe('模型可达性探测', () => {
   /** 造一个能按模型决定探测响应的假中转站。 */
   function makeProbeRelay(behaviour) {
-    const state = { group: 'default', probes: [] };
+    const state = { group: 'default', probes: [], probePaths: [] };
     const models = Object.keys(behaviour);
     const server = createServer((req, res) => {
       const url = new URL(req.url ?? '/', 'http://localhost');
@@ -1310,13 +1310,15 @@ describe('模型可达性探测', () => {
         res.end(JSON.stringify({ success: true, data: { group: state.group, groups: [{ symbol: 'default', ratio: 1 }] } }));
         return;
       }
-      if (url.pathname === '/v1/chat/completions') {
+      // 三个协议各自的生成端点都要认：探测走错端点即说明修复回归
+      if (GENERATE_PATHS.includes(url.pathname)) {
         let raw = '';
         req.on('data', (c) => { raw += c; });
         req.on('end', () => {
           let model = '';
           try { model = JSON.parse(raw)?.model ?? ''; } catch { /* ignore */ }
           state.probes.push(model);
+          state.probePaths.push(url.pathname);
           const b = behaviour[model];
           if (!b || ((b.status ?? 200) === 200)) {
             res.writeHead(200, { 'Content-Type': 'application/json' });
@@ -1333,6 +1335,9 @@ describe('模型可达性探测', () => {
     });
     return { server, state };
   }
+
+  /** 探测可用的生成端点：探测请求可能落在其中任意一个，取决于线路协议。 */
+  const GENERATE_PATHS = ['/v1/chat/completions', '/v1/responses', '/v1/messages'];
 
   it('明确拒绝的模型判为 unavailable，暂时性故障保持 unknown', async () => {
     const dshHome = mkdtempSync(join(tmpdir(), 'dsh-aimy-probe-'));
@@ -1398,6 +1403,87 @@ describe('模型可达性探测', () => {
       const ids = body.data.models.map((m) => m.id).sort();
       assert.deepEqual(ids, ['model-a', 'model-gone'], '判死只是标注，目录要保留完整');
       assert.equal(body.data.reachability['model-gone'], 'unavailable');
+    } finally {
+      await new Promise((r) => relay.server.close(r));
+      rmSync(dshHome, { recursive: true, force: true });
+    }
+  });
+
+  /**
+   * 回归：探测端点必须跟随线路协议。
+   *
+   * 修复前 probeModels 硬编码 `/v1/chat/completions`，在 responses 协议下会对
+   * 只支持 responses 的中转站打错端点，把可用模型误判为 unavailable。
+   */
+  it('探测端点跟随协议：responses 协议打 /v1/responses', async () => {
+    const dshHome = mkdtempSync(join(tmpdir(), 'dsh-aimy-probe-api-resp-'));
+    const relay = makeProbeRelay({ 'model-a': {} });
+    await new Promise((r) => relay.server.listen(0, '127.0.0.1', r));
+    const baseURL = 'http://127.0.0.1:' + relay.server.address().port;
+
+    try {
+      const plugin = await startPlugin(baseURL, dshHome, {
+        config: { probeModels: true, api: 'openai-responses' },
+      });
+      const { body } = await json(plugin.base + '/refresh', { method: 'POST' });
+      await new Promise((r) => plugin.server.close(r));
+
+      assert.deepEqual(
+        relay.state.probePaths,
+        ['/v1/responses'],
+        'responses 协议必须打 /v1/responses，实际：' + relay.state.probePaths.join(','),
+      );
+      assert.equal(body.data.reachability['model-a'], 'ok');
+    } finally {
+      await new Promise((r) => relay.server.close(r));
+      rmSync(dshHome, { recursive: true, force: true });
+    }
+  });
+
+  it('探测端点跟随协议：completions 协议打 /v1/chat/completions', async () => {
+    const dshHome = mkdtempSync(join(tmpdir(), 'dsh-aimy-probe-api-chat-'));
+    const relay = makeProbeRelay({ 'model-a': {} });
+    await new Promise((r) => relay.server.listen(0, '127.0.0.1', r));
+    const baseURL = 'http://127.0.0.1:' + relay.server.address().port;
+
+    try {
+      const plugin = await startPlugin(baseURL, dshHome, {
+        config: { probeModels: true, api: 'openai-completions' },
+      });
+      const { body } = await json(plugin.base + '/refresh', { method: 'POST' });
+      await new Promise((r) => plugin.server.close(r));
+
+      assert.deepEqual(
+        relay.state.probePaths,
+        ['/v1/chat/completions'],
+        'completions 协议必须打 /v1/chat/completions，实际：' + relay.state.probePaths.join(','),
+      );
+      assert.equal(body.data.reachability['model-a'], 'ok');
+    } finally {
+      await new Promise((r) => relay.server.close(r));
+      rmSync(dshHome, { recursive: true, force: true });
+    }
+  });
+
+  it('探测端点跟随协议：anthropic 协议打 /v1/messages', async () => {
+    const dshHome = mkdtempSync(join(tmpdir(), 'dsh-aimy-probe-api-anth-'));
+    const relay = makeProbeRelay({ 'model-a': {} });
+    await new Promise((r) => relay.server.listen(0, '127.0.0.1', r));
+    const baseURL = 'http://127.0.0.1:' + relay.server.address().port;
+
+    try {
+      const plugin = await startPlugin(baseURL, dshHome, {
+        config: { probeModels: true, api: 'anthropic-messages' },
+      });
+      const { body } = await json(plugin.base + '/refresh', { method: 'POST' });
+      await new Promise((r) => plugin.server.close(r));
+
+      assert.deepEqual(
+        relay.state.probePaths,
+        ['/v1/messages'],
+        'anthropic 协议必须打 /v1/messages，实际：' + relay.state.probePaths.join(','),
+      );
+      assert.equal(body.data.reachability['model-a'], 'ok');
     } finally {
       await new Promise((r) => relay.server.close(r));
       rmSync(dshHome, { recursive: true, force: true });

@@ -500,6 +500,7 @@ export function apply(ctx: any, config?: Config): void {
       routeName: profile.routeName,
       group: '',
       apiKey: await resolveApiKey(ctx, profile.apiKeyRef, inline),
+      api: profile.api,
       store: catalogs,
       provider: mounts.get(profile.id) ?? settingsMountShim(profile.id),
       syncProvider: (models) => syncProvider(profile, models),

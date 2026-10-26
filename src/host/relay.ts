@@ -1,5 +1,5 @@
 /** 中转站 HTTP 客户端：只做「请求 + 反序列化 + 错误归一」，不做业务编排。 */
-import type { ReachabilityMap, RelayModel, TokenGroupState } from '../shared/types';
+import { DEFAULT_API, type ReachabilityMap, type RelayApi, type RelayModel, type TokenGroupState } from '../shared/types';
 
 export class RelayError extends Error {
   constructor(
@@ -15,6 +15,12 @@ export class RelayError extends Error {
 export interface RelayOptions {
   baseURL: string;
   apiKey: string;
+  /**
+   * 线路协议。探测请求必须按协议选端点：同一个中转站在 responses 与
+   * completions 下是两套线路，用错端点会得到与真实调用不一致的结论
+   * （例如把只支持 responses 的模型误判为不可用）。缺省按 Responses。
+   */
+  api?: RelayApi;
   /** 测试时注入；生产使用全局 fetch */
   fetchImpl?: typeof fetch;
   timeoutMs?: number;
@@ -189,10 +195,68 @@ function deniesModel(error: RelayError): boolean {
 }
 
 /**
+ * 按协议给出一次「最小生成」探测的端点与请求体。
+ *
+ * 三种协议的探测载荷不同，必须各自匹配，否则上游会按「请求格式错误」返回 400，
+ * 而 400 里带 model 字样时还会被 deniesModel 误判成「模型不可用」：
+ *
+ *   openai-responses   : POST /v1/responses    { input, max_output_tokens }
+ *   openai-completions : POST /v1/chat/completions { messages, max_tokens }
+ *   anthropic-messages : POST /v1/messages     { messages, max_tokens }
+ *
+ * Anthropic 协议必须带 anthropic-version 头，否则上游直接拒绝。
+ */
+function probeRequest(api: RelayApi, modelId: string): { pathname: string; init: RequestInit } {
+  const base = { method: 'POST' as const };
+
+  if (api === 'openai-responses') {
+    return {
+      pathname: '/v1/responses',
+      init: {
+        ...base,
+        body: JSON.stringify({ model: modelId, input: 'ping', max_output_tokens: 1, stream: false }),
+      },
+    };
+  }
+
+  if (api === 'anthropic-messages') {
+    return {
+      pathname: '/v1/messages',
+      init: {
+        ...base,
+        headers: { 'anthropic-version': '2023-06-01' },
+        body: JSON.stringify({
+          model: modelId,
+          messages: [{ role: 'user', content: 'ping' }],
+          max_tokens: 1,
+          stream: false,
+        }),
+      },
+    };
+  }
+
+  return {
+    pathname: '/v1/chat/completions',
+    init: {
+      ...base,
+      body: JSON.stringify({
+        model: modelId,
+        messages: [{ role: 'user', content: 'ping' }],
+        max_tokens: 1,
+        stream: false,
+      }),
+    },
+  };
+}
+
+/**
  * 探测模型可达性。
  *
  * 用一次最小成本的生成请求判断上游到底认不认这个 id：`max_tokens: 1` +
  * 固定单字输入，成本可以忽略。不做流式，只要能拿到状态码即可。
+ *
+ * **端点必须跟随协议**（见 probeRequest）：responses 协议下用 chat 端点探测，
+ * 会因为线路不同得出错误结论。
  *
  * 并发度刻意压得很低（默认 4）：中转站通常有速率限制，探测本身不该把
  * 用户当轮的正常调用挤掉。
@@ -212,15 +276,8 @@ export async function probeModels(
       const next = queue.shift();
       if (!next) return;
       try {
-        await request<unknown>(opts, '/v1/chat/completions', {
-          method: 'POST',
-          body: JSON.stringify({
-            model: next.id,
-            messages: [{ role: 'user', content: 'ping' }],
-            max_tokens: 1,
-            stream: false,
-          }),
-        });
+        const { pathname, init } = probeRequest(opts.api ?? DEFAULT_API, next.id);
+        await request<unknown>(opts, pathname, init);
         result[next.id] = 'ok';
       } catch (error) {
         if (error instanceof RelayError && deniesModel(error)) {

@@ -7,6 +7,7 @@ import {
   type CredentialStatus,
   type ModelSelection,
   type PluginState,
+  type RelayApi,
   type SwitchResult,
 } from '../shared/types';
 
@@ -16,6 +17,8 @@ export interface RouteDeps {
   routeName?: string;
   group: string;
   apiKey: string;
+  /** 线路协议：探测请求据此选端点，必须与真实调用一致 */
+  api?: RelayApi;
   store: CatalogStore;
   /** 已挂载的模型路由（可选：未挂载时状态里 provider 为 null）*/
   provider?: ProviderMount;
@@ -38,7 +41,7 @@ export interface RouteResult {
 }
 
 function opts(deps: RouteDeps): RelayOptions {
-  return { baseURL: deps.baseURL, apiKey: deps.apiKey, fetchImpl: deps.fetchImpl };
+  return { baseURL: deps.baseURL, apiKey: deps.apiKey, api: deps.api, fetchImpl: deps.fetchImpl };
 }
 
 /** 把「当前选择」与目录做一致性检查：只标记，不改选，避免静默更换计费对象。 */

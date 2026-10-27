@@ -99,7 +99,8 @@ export async function writeProviderViaSettings(
     defaultInput: [...(imageInput ? MODEL_INPUT_TEXT_IMAGE : MODEL_INPUT_TEXT)],
     // 必须带 cost 与 reasoningEfforts：少了后者，pi-ai 会认为该模型不支持思考，
     // 模型选择器里就没有档位可选（resolveModelReasoning 未声明时回退 reasoning:false）。
-    models: target.models.map((m) => modelEntry(m.id, m.name, imageInput)),
+    // 逐模型 maxTokens 也必须带：provider 级的 defaultMaxTokens 不上报给 DSH。
+    models: target.models.map((m) => modelEntry(m, imageInput)),
   };
 
   try {

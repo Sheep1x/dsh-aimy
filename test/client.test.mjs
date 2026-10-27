@@ -420,7 +420,7 @@ describe('dsh-aimy client', () => {
     assert.ok(textOf(tree).includes('已关闭'), '应提示当前是关闭状态');
   });
 
-  it('能力声明标注来源：面板说明 1M 与图片是插件默认值而非上游确认', async () => {
+  it('能力声明标注来源：面板说明上下文/输出是按三层取值链推出来的', async () => {
     globalThis.fetch = async () => ({
       text: async () => JSON.stringify({ success: true, data: stateBody }),
     });
@@ -429,13 +429,14 @@ describe('dsh-aimy client', () => {
     const tree = await mount(Panel);
     const text = textOf(tree);
 
-    // 中转站 /v1/models 只给 id，窗口与模态是我们标的默认值。
-    // 不写明来源的话，用户会以为这是站点确认过的能力。
+    // 取值链是「站点声明 → 官方目录 → 兜底」，不是站点确认过的能力。
+    // 不写明来源的话，用户会以为猜出来的窗口是上游承诺，撞墙时不知道该怀疑谁。
     assert.ok(
-      text.includes('上游未提供') || text.includes('插件默认标注'),
-      '应说明能力声明的来源，实际文本：' + text.slice(0, 600),
+      text.includes('容量声明来源') && text.includes('官方目录'),
+      '应说明容量取值链，实际文本：' + text.slice(0, 700),
     );
     assert.ok(text.includes('1M'), '应提到 1M 上下文');
+    assert.ok(text.includes('128K'), '应提到 128K 输出上限');
   });
 
   it('有探测结果时显示不可用模型计数', async () => {

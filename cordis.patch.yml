@@ -30,9 +30,11 @@
         compatApi: 'openai-responses'
 
         # ── 模型能力默认 ───────────────────────────────────────────
-        # 中转站 /v1/models 只返回 id，不提供窗口与模态；
-        # 这里统一按 1M 上下文 + 文本/图片输入标注（面板可关图片）。
+        # 真实取值按三层解析（见 src/host/capacity.ts）：
+        #   站点 /v1/models 声明的容量 → pi-ai 官方目录 → 这里的兜底值。
+        # 注意：这两个数只是 provider 级 fallback，pi-ai **不会把它上报给 DSH**；
+        # 真正生效的是逐模型 entry.maxTokens（插件会自动写）。
         defaultContextWindow: 1000000
-        defaultMaxTokens: 8192
+        defaultMaxTokens: 128000
         # 是否给模型声明 image 模态；面板「图片输入」开关会覆盖它并落盘
         imageInput: true

@@ -31,13 +31,26 @@ export const REASONING_EFFORTS = {
 export const DEFAULT_REASONING_EFFORT = 'high';
 
 /**
- * 插件给所有模型标注的上下文窗口（1M）。
+ * 上下文窗口的兜底值（1M）。
  *
- * 中转站 /v1/models 只返回 id，不提供窗口与模态信息，所以只能按默认值统一标注。
+ * 中转站 /v1/models 只返回 id、站点也没声明容量时用这个数。
  * 注意这不是纯装饰：dsh-compaction-basic 的 thresholdTokens、
  * 溢出判定和用量压力百分比都是拿这个数算的。
+ *
+ * 实际取值由 ../host/capacity.ts 决定（站点声明 ?? 官方目录 ?? 这个兜底），
+ * 别再把它当所有模型的统一值。
  */
 export const MODEL_CONTEXT_WINDOW = 1_000_000;
+
+/**
+ * 最大输出 token 的兜底值（128K）。
+ *
+ * 必须**逐模型**写进 entry 的 `maxTokens`：pi-ai 只把 entry 级的 maxTokens
+ * 上报成 `info.defaultMaxTokens`，provider 级的 `defaultMaxTokens` 只是解析
+ * fallback、不会上报。DSH 的 `resolveCallWithInfo()` 与压缩预算都只读前者，
+ * 所以只改 provider 级默认值等于没改（详见 ../host/capacity.ts）。
+ */
+export const MODEL_DEFAULT_MAX_TOKENS = 128_000;
 
 /** 输入模态。顺序固定，pi-ai 的 MODALITIES 就是 text / image。 */
 export const MODEL_INPUT_TEXT = ['text'] as const;
@@ -55,21 +68,31 @@ export const ZERO_COST = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } as
 /**
  * 把一个模型条目补全成 pi-ai 可用的 profile entry。
  *
+ * @param model 目录条目；`contextWindow` / `maxTokens` 由 ../host/capacity.ts
+ *   解析好之后填进来（站点声明 ?? 官方目录 ?? 兜底）。缺失时退回兜底值，
+ *   保证 entry 永远带合法的正整数——pi-ai 的 schema 对两者都要求 min(1)。
  * @param imageInput 是否声明图片输入（面板上的开关，默认开）。
  *   关掉之后只声明 text：pi-ai 会在贴图阶段就拒绝，
  *   比让上游在整轮中途报错要干净。
  */
 export function modelEntry(
-  id: string,
-  name?: string,
+  model: { id: string; name?: string; contextWindow?: number; maxTokens?: number },
   imageInput = true,
 ): Record<string, unknown> {
+  const { id, name } = model;
   return {
     id,
     ...(name === undefined ? {} : { name }),
-    contextWindow: MODEL_CONTEXT_WINDOW,
+    // 逐模型声明是唯一会被 DSH 采纳的路径（见 MODEL_DEFAULT_MAX_TOKENS 的说明）。
+    contextWindow: positiveOr(model.contextWindow, MODEL_CONTEXT_WINDOW),
+    maxTokens: positiveOr(model.maxTokens, MODEL_DEFAULT_MAX_TOKENS),
     input: [...(imageInput ? MODEL_INPUT_TEXT_IMAGE : MODEL_INPUT_TEXT)],
     cost: { ...ZERO_COST },
     reasoningEfforts: { ...REASONING_EFFORTS },
   };
+}
+
+/** 取一个合法的正整数容量值；缺失或非法时用兜底。 */
+function positiveOr(value: number | undefined, fallback: number): number {
+  return typeof value === 'number' && Number.isInteger(value) && value > 0 ? value : fallback;
 }

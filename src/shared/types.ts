@@ -10,6 +10,18 @@ export interface RelayGroup {
 export interface RelayModel {
   id: string;
   name?: string;
+  /**
+   * 站点在 /v1/models 里自己声明的上下文窗口。
+   *
+   * 绝大多数中转站只返回 id（本站实测如此），但 new-api / sub2api 的一些
+   * 版本会带 `context_length` / `max_input_tokens` 之类字段。有则用：
+   * 那是网关对自己能力的声明，比目录快照与兜底假设都可信。
+   */
+  contextWindow?: number;
+  /** 站点声明的最大输出（`max_output_tokens` / `max_tokens` 等）。 */
+  maxTokens?: number;
+  /** 容量来源标注：仅用于面板展示与排障，不参与下发。 */
+  capacitySource?: 'relay' | 'official' | 'default';
 }
 
 /**

@@ -8,8 +8,12 @@ import { join } from 'node:path';
 
 const KEY = 'sk-test-key';
 
-/** 假中转站：支持切组与不支持切组两种形态。 */
-function makeRelay({ supportsSwitch }) {
+/** 假中转站：支持切组与不支持切组两种形态。
+ *
+ * `capacityModels` 可把某些模型改成「站点声明了容量」的形状，
+ * 用来验证 /v1/models 里带 context_length / max_output_tokens 时会被采纳。
+ */
+function makeRelay({ supportsSwitch, capacityModels = {} }) {
   const state = { group: 'default', log: [] };
   const groups = [
     { symbol: 'default', name: '默认', ratio: 1, public: true },
@@ -69,7 +73,11 @@ function makeRelay({ supportsSwitch }) {
     if (url.pathname === '/v1/models') {
       const list = modelsByGroup[state.group] ?? [];
       res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ object: 'list', data: list.map((id) => ({ id, object: 'model' })) }));
+      // capacityModels 里的 id 额外带上站点声明的容量字段（new-api / sub2api 会这么返回）
+      res.end(JSON.stringify({
+        object: 'list',
+        data: list.map((id) => ({ id, object: 'model', ...(capacityModels[id] ?? {}) })),
+      }));
       return;
     }
 
@@ -287,13 +295,17 @@ describe('dsh-aimy host routes', () => {
       // 上下文窗口必须逐模型声明：解析顺序是
       // entry.contextWindow ?? 目录值 ?? provider.defaultContextWindow，
       // 漏写就让 provider 级默认值顶上来（界面会显示成小窗口）。
-      assert.equal(m.contextWindow, 1000000, '每个 model 必须声明 1M 上下文窗口：' + JSON.stringify(m));
+      // 假目录里的 model-a/model-b 是虚构 id，官方表里没有 → 走兜底 1M。
+      assert.equal(m.contextWindow, 1000000, '每个 model 必须声明上下文窗口：' + JSON.stringify(m));
+      // 最大输出必须逐模型声明：pi-ai 只上报 entry 级的 maxTokens，
+      // provider 级 defaultMaxTokens 不会上报，DSH 与压缩预算都读不到。
+      assert.equal(m.maxTokens, 128000, '每个 model 必须声明最大输出：' + JSON.stringify(m));
       // 输入模态：declaredInput() 对「缺省」和「空数组」都返回 undefined，
       // 必须写非空数组，否则模态退化成 provider 默认的纯文本。
       assert.deepEqual(m.input, ['text', 'image'], '每个 model 必须声明文本 + 图片输入：' + JSON.stringify(m));
     }
     assert.equal(profile.defaultContextWindow, 1000000);
-    assert.equal(profile.defaultMaxTokens, 8192);
+    assert.equal(profile.defaultMaxTokens, 128000);
     // provider 级兜底：某个模型的 input 若被写成空数组，会回落到这里
     assert.deepEqual(profile.defaultInput, ['text', 'image']);
   });
@@ -1484,6 +1496,88 @@ describe('模型可达性探测', () => {
         'anthropic 协议必须打 /v1/messages，实际：' + relay.state.probePaths.join(','),
       );
       assert.equal(body.data.reachability['model-a'], 'ok');
+    } finally {
+      await new Promise((r) => relay.server.close(r));
+      rmSync(dshHome, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('容量声明：站点字段 → 官方目录 → 兜底', () => {
+  it('站点在 /v1/models 里声明容量时，逐模型 maxTokens 被采纳并落进挂载配置', async () => {
+    const dshHome = mkdtempSync(join(tmpdir(), 'dsh-aimy-cap-relay-'));
+    const relay = makeRelay({
+      supportsSwitch: true,
+      // new-api 风格：把数字写成字符串也要收
+      capacityModels: { 'model-a': { context_length: '200000', max_output_tokens: 64000 } },
+    });
+    await new Promise((r) => relay.server.listen(0, '127.0.0.1', r));
+
+    try {
+      const plugin = await startPlugin('http://127.0.0.1:' + relay.server.address().port, dshHome);
+      await json(plugin.base + '/state');
+
+      const adapter = await import('./fake-adapter.mjs');
+      const mount = adapter.mounts.filter((m) => m && m.onehub).pop();
+      const models = mount.onehub.models;
+      const a = models.find((m) => m.id === 'model-a');
+      const b = models.find((m) => m.id === 'model-b');
+
+      assert.equal(a.contextWindow, 200000, '站点声明的上下文要被采纳');
+      assert.equal(a.maxTokens, 64000, '站点声明的输出要被采纳');
+      // model-b 站点没声明、官方目录也没有 → 兜底
+      assert.equal(b.contextWindow, 1000000);
+      assert.equal(b.maxTokens, 128000, '未声明时用 128K 兜底');
+
+      const { body } = await json(plugin.base + '/state');
+      const stateA = body.data.models.find((m) => m.id === 'model-a');
+      assert.equal(stateA.capacitySource, 'relay', '面板据此标注来源');
+      const stateB = body.data.models.find((m) => m.id === 'model-b');
+      assert.equal(stateB.capacitySource, 'default');
+
+      await new Promise((r) => plugin.server.close(r));
+    } finally {
+      await new Promise((r) => relay.server.close(r));
+      rmSync(dshHome, { recursive: true, force: true });
+    }
+  });
+
+  it('官方目录收录的模型：输出上限用官方值（更大就用更大的）', async () => {
+    const dshHome = mkdtempSync(join(tmpdir(), 'dsh-aimy-cap-official-'));
+    // 假中转站返回真实存在的官方模型 id，且不给任何容量字段
+    const relay = makeRelay({ supportsSwitch: true });
+    relay.server.removeAllListeners('request');
+    relay.server.on('request', (req, res) => {
+      const url = new URL(req.url ?? '/', 'http://localhost');
+      if (url.pathname === '/v1/models') {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({
+          object: 'list',
+          data: [{ id: 'deepseek-v4.1-flash', object: 'model' }, { id: 'hy4-preview', object: 'model' }],
+        }));
+        return;
+      }
+      // 其余（/v1/token/group）按不支持切组处理
+      res.writeHead(404, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ success: false, message: 'not found' }));
+    });
+    await new Promise((r) => relay.server.listen(0, '127.0.0.1', r));
+
+    try {
+      const plugin = await startPlugin('http://127.0.0.1:' + relay.server.address().port, dshHome);
+      await json(plugin.base + '/refresh', { method: 'POST' });
+
+      const adapter = await import('./fake-adapter.mjs');
+      const mount = adapter.mounts.filter((m) => m && m.onehub).pop();
+      const byId = Object.fromEntries(mount.onehub.models.map((m) => [m.id, m]));
+
+      // 官方 384K > 兜底 128K → 用官方
+      assert.equal(byId['deepseek-v4.1-flash'].maxTokens, 384000, '官方更大就用官方的');
+      assert.equal(byId['deepseek-v4.1-flash'].contextWindow, 1000000);
+      // 官方 64K < 兜底 128K → 也用官方（否则会被上游 400）
+      assert.equal(byId['hy4-preview'].maxTokens, 64000, '官方更小就用官方的');
+
+      await new Promise((r) => plugin.server.close(r));
     } finally {
       await new Promise((r) => relay.server.close(r));
       rmSync(dshHome, { recursive: true, force: true });

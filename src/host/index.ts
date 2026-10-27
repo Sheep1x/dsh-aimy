@@ -27,6 +27,7 @@ import {
   type RelayApi,
 } from './profiles';
 import { DEFAULT_REASONING_EFFORT } from '../shared/model-profile';
+import { FALLBACK_CONTEXT_WINDOW, FALLBACK_MAX_TOKENS, resolveModels } from './capacity';
 import { removeProviderViaSettings, setDefaultReasoningEffort, writeProviderViaSettings } from './registry';
 import { CatalogStore } from './state';
 import { describeError, readState, switchGroup, type RouteDeps } from './routes';
@@ -34,6 +35,16 @@ import type { RelayModel } from '../shared/types';
 
 // 供测试与调试：从适配器模块里挑出可挂载的 cordis 插件
 export { pickPlugin } from './provider';
+// 容量解析：单测直接断言取值链（站点声明 → 官方目录 → 兜底）与压缩夹取规则
+export {
+  FALLBACK_CONTEXT_WINDOW,
+  FALLBACK_MAX_TOKENS,
+  clampMaxTokens,
+  officialCapacity,
+  resolveCapacity,
+  resolveModels,
+  sameCapacity,
+} from './capacity';
 
 const ROUTE_PREFIX = '/dsh-aimy-relay';
 
@@ -77,8 +88,13 @@ const DEFAULT_KEY_REF = 'ONEHUB_API_KEY';
 /** DSH profile 里官方 pi-ai 条目的默认 id（cordis.patch.yml 里的 - id: llm-pi-ai）。 */
 const DEFAULT_SETTINGS_NS = 'llm-pi-ai';
 const DEFAULT_ROUTE = 'onehub';
-const DEFAULT_CONTEXT_WINDOW = 1_000_000;
-const DEFAULT_MAX_TOKENS = 8192;
+/**
+ * provider 级兜底。注意它只是 pi-ai 的解析 fallback，**不会上报给 DSH**
+ * （上报的是逐模型 entry.maxTokens）。真正生效的默认值在 ./capacity.ts，
+ * 这里保持一致只是为了让配置文件读起来不矛盾。
+ */
+const DEFAULT_CONTEXT_WINDOW = FALLBACK_CONTEXT_WINDOW;
+const DEFAULT_MAX_TOKENS = FALLBACK_MAX_TOKENS;
 
 /**
  * 插件配置来自 cordis 传给 apply() 的第二个参数。
@@ -369,7 +385,9 @@ export function apply(ctx: any, config?: Config): void {
   /** 每个档案最近一次成功同步的模型集合，供 remountProvider 判断是否真的需要重挂。 */
   const lastSyncedModels = new Map<string, RelayModel[]>();
 
-  const syncProvider = async (profile: ProfileConfig, models: RelayModel[]): Promise<{ ok: boolean; error?: string }> => {
+  const syncProvider = async (profile: ProfileConfig, incoming: RelayModel[]): Promise<{ ok: boolean; error?: string }> => {
+    // 幂等：已定稿的目录原样通过，未定稿的在这里补算容量。
+    const models = resolveModels(incoming);
     lastSyncedModels.set(profile.id, models);
     if (!profile.baseURL) {
       return { ok: false, error: '该档案还没配置地址' };
@@ -573,7 +591,8 @@ export function apply(ctx: any, config?: Config): void {
         if (!profile.baseURL) continue;
         const cached = catalogs.latest(profile.baseURL);
         if (!cached || cached.models.length === 0) continue;
-        await syncProvider(profile, cached.models);
+        // 老缓存没有容量字段，安全起见再解析一次（幂等，已定稿的原样返回）。
+        await syncProvider(profile, resolveModels(cached.models));
       } catch {
         // 预热失败不影响插件其余部分，面板里会显示原因
       }

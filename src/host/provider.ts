@@ -12,6 +12,7 @@
  * 字段且写入通道只对 Loader 开放，插件侧无法原地改），路由注册本身是原子的。
  */
 import { MODEL_INPUT_TEXT, MODEL_INPUT_TEXT_IMAGE, modelEntry } from '../shared/model-profile';
+import { sameCapacity } from './capacity';
 import { DEFAULT_API, type RelayApi, type RelayModel } from '../shared/types';
 
 export type { RelayApi };
@@ -132,17 +133,27 @@ export function buildProfile(opts: ProviderOptions): Record<string, unknown> {
     defaultMaxTokens: opts.defaultMaxTokens,
     // provider 级兜底（逐模型已声明 input；空数组会回落到这里）
     defaultInput: [...(imageInput ? MODEL_INPUT_TEXT_IMAGE : MODEL_INPUT_TEXT)],
-    // 与 settings 路径共用同一份能力声明：contextWindow + 输入模态 + cost + 思考档位。
-    // 少了 reasoningEfforts，pi-ai 会回退 reasoning:false，模型就没有档位可选。
-    models: opts.models.map((m) => modelEntry(m.id, m.name, imageInput)),
+    // 与 settings 路径共用同一份能力声明：contextWindow + maxTokens + 输入模态
+    // + cost + 思考档位。少了 reasoningEfforts，pi-ai 会回退 reasoning:false，
+    // 模型就没有档位可选；少了逐模型 maxTokens，DSH 拿不到输出上限（见 capacity.ts）。
+    models: opts.models.map((m) => modelEntry(m, imageInput)),
   };
 }
 
-/** 模型集合是否相同（用于跳过无意义的重挂载）。 */
+/**
+ * 模型集合是否相同（用于跳过无意义的重挂载）。
+ *
+ * 连容量一起比：站点换了分组/升级后同一个模型可能改了窗口或输出上限，
+ * 只比 id 会把这种变化判成「没变」，模型选择器里就一直显示旧值。
+ */
 export function sameModels(a: RelayModel[], b: RelayModel[]): boolean {
   if (a.length !== b.length) return false;
   for (let i = 0; i < a.length; i += 1) {
-    if (a[i]?.id !== b[i]?.id) return false;
+    const left = a[i];
+    const right = b[i];
+    if (left === undefined || right === undefined) return false;
+    if (left.id !== right.id) return false;
+    if (!sameCapacity(left, right)) return false;
   }
   return true;
 }

@@ -1,5 +1,6 @@
 /** /dsh-aimy-relay/* 的业务实现：纯函数式编排，便于脱离 Cordis 单测。 */
 import { RelayError, fetchModels, fetchTokenGroup, probeModels, switchTokenGroup, type RelayOptions } from './relay';
+import { resolveModels } from './capacity';
 import type { ProviderMount } from './provider';
 import type { CatalogStore } from './state';
 import {
@@ -115,19 +116,24 @@ export async function readState(deps: RouteDeps, refresh = false): Promise<Plugi
   const groupKey = state.token?.group ?? '';
   const cached = deps.store.get(deps.baseURL, groupKey);
   if (!refresh && cached) {
-    state.models = cached.models;
+    // 老缓存（升级前落盘的）没有容量字段：这里补算一次。
+    // resolveModels 幂等，已定稿的条目原样返回。
+    const cachedModels = resolveModels(cached.models);
+    state.models = cachedModels;
     state.modelsFetchedAt = cached.fetchedAt;
     state.connected = true;
     // 缓存命中也要同步 provider：进程刚起来 / 面板没开过时，模型路由还没挂，
     // 只有挂上去模型才会出现在 DSH 的模型选择器里。
-    const synced = await deps.syncProvider?.(cached.models);
+    const synced = await deps.syncProvider?.(cachedModels);
     state.provider = providerState(deps, synced && !synced.ok ? synced.error : undefined, deps.routeName);
     applySelection(state, deps);
     return state;
   }
 
   try {
-    const models = await fetchModels(opts(deps));
+    // 解析容量后再落缓存：缓存里存的必须是「已定稿」的条目，
+    // 否则冷启动预热会拿一份缺容量的目录去挂载（模型选择器里显示成兜底值）。
+    const models = resolveModels(await fetchModels(opts(deps)));
     const fetchedAt = Date.now();
     deps.store.set({ baseURL: deps.baseURL, group: groupKey, models, fetchedAt });
     state.models = models;
@@ -176,7 +182,7 @@ export async function switchGroup(deps: RouteDeps, group: string): Promise<Route
 
   let warning: string | undefined;
   try {
-    const models = await fetchModels(opts(deps));
+    const models = resolveModels(await fetchModels(opts(deps)));
     const fetchedAt = Date.now();
     deps.store.set({ baseURL: deps.baseURL, group: token.group, models, fetchedAt });
     state.models = models;

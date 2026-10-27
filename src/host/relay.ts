@@ -170,10 +170,55 @@ export async function fetchModels(opts: RelayOptions): Promise<RelayModel[]> {
     const id = typeof item === 'string' ? item : String((item as Record<string, unknown>)?.id ?? '');
     if (!id || seen.has(id)) continue;
     seen.add(id);
-    models.push({ id, name: id });
+    const capacity = typeof item === 'string' ? {} : declaredCapacity(item as Record<string, unknown>);
+    models.push({ id, name: id, ...capacity });
   }
   models.sort((a, b) => a.id.localeCompare(b.id));
   return models;
+}
+
+/**
+ * 从 /v1/models 的一个条目里读出站点声明的容量。
+ *
+ * 字段名各种网关不一样，这里把 pi-ai 自己的发现逻辑（它认的那些键）对齐过来：
+ *   上下文：context_length | max_input_tokens | context_window | limit.context
+ *   输出  ：max_output_tokens | max_completion_tokens | max_tokens | top_provider.max_completion_tokens
+ *
+ * 只接受正整数。**读不到就不填**——由 ../host/capacity.ts 往下一层回落，
+ * 绝不拿 0 或 NaN 占位（那会让 pi-ai 的 schema（min(1)）直接拒绝整个 provider）。
+ */
+function declaredCapacity(entry: Record<string, unknown>): { contextWindow?: number; maxTokens?: number } {
+  const limit = entry.limit as Record<string, unknown> | undefined;
+  const topProvider = entry.top_provider as Record<string, unknown> | undefined;
+  const contextWindow = firstPositive(
+    entry.context_length,
+    entry.max_input_tokens,
+    entry.context_window,
+    entry.contextWindow,
+    limit?.context,
+  );
+  const maxTokens = firstPositive(
+    entry.max_output_tokens,
+    entry.max_completion_tokens,
+    entry.max_completionTokens,
+    entry.max_tokens,
+    entry.maxTokens,
+    limit?.output,
+    topProvider?.max_completion_tokens,
+  );
+  return {
+    ...(contextWindow === undefined ? {} : { contextWindow }),
+    ...(maxTokens === undefined ? {} : { maxTokens }),
+  };
+}
+
+/** 取第一个为正整数的候选（字符串数字也收，网关常把数字写成字符串）。 */
+function firstPositive(...values: unknown[]): number | undefined {
+  for (const value of values) {
+    const numeric = typeof value === 'string' ? Number(value) : value;
+    if (typeof numeric === 'number' && Number.isInteger(numeric) && numeric > 0) return numeric;
+  }
+  return undefined;
 }
 
 /**

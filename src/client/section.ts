@@ -192,6 +192,28 @@ function reachSummary(state: PluginState | null): string | null {
 /** 区段/面板标题：设置页分区名与侧栏面板名共用。 */
 const PANEL_TITLE = 'Aimy-艾米';
 
+/**
+ * 容量声明来源说明。
+ *
+ * 一句话讲清三层取值链，并给出本次目录里各来源的模型数——用户据此判断
+ * 「这个 1M 是站点说的、官方说的，还是插件猜的」。不写清楚的话，
+ * 猜出来的窗口会被当成上游承诺，撞墙时没人知道该怀疑谁。
+ */
+function capacityNote(state: PluginState | null): string {
+  const base = '容量声明来源：站点 /v1/models 声明 → pi-ai 官方目录 → 兜底 1M 上下文 / 128K 输出；输出上限按压缩 headroom 夹过。';
+  const models = state?.models ?? [];
+  if (models.length === 0) return base;
+  const count = (source: string): number => models.filter((m) => m.capacitySource === source).length;
+  const parts: string[] = [];
+  const relay = count('relay');
+  const official = count('official');
+  const fallback = count('default');
+  if (relay > 0) parts.push(relay + ' 个来自站点');
+  if (official > 0) parts.push(official + ' 个来自官方目录');
+  if (fallback > 0) parts.push(fallback + ' 个走兜底');
+  return parts.length === 0 ? base : base + '　本次目录：' + parts.join('，') + '。';
+}
+
 export function makeSection(deps: SectionDeps) {
   const { h, useState, useEffect, useCallback, request } = deps;
 
@@ -595,19 +617,15 @@ export function makeSection(deps: SectionDeps) {
           { style: S.hint },
           state && state.imageInput === false
             ? '已关闭（模型只声明文本）'
-            : '已开启（文本 + 图片）· 上下文窗口按 1M 标注',
+            : '已开启（文本 + 图片）· 上下文 1M / 输出 128K 为兜底值',
         ),
       ),
       /*
-       * 能力声明的来源必须写明：/v1/models 只返回 id，1M 与模态是本插件
-       * 标上去的默认值，不是站点确认过的能力。用户据此判断能不能贴图、
-       * 会不会撞上下文墙——把这个混淆了，代价很实。
+       * 能力声明的来源必须写明：/v1/models 通常只返回 id，上下文与输出上限是
+       * 按「站点声明 → 官方目录 → 兜底」三层推出来的，不是站点确认过的能力。
+       * 用户据此判断会不会撞上下文墙、长回答会不会被截断——混淆代价很实。
        */
-      h(
-        'div',
-        { style: S.hint },
-        '能力声明来源：中转站 /v1/models 只返回模型 id，1M 上下文与图片输入均由本插件默认标注，非上游确认。',
-      ),
+      h('div', { style: S.hint }, capacityNote(state)),
       h(
         'div',
         { style: S.row },

@@ -359,27 +359,59 @@ ctx.plugin(PiAiAdapter, {
       baseURL: 'https://你的站点/v1',
       apiKeyEnv: 'ONEHUB_API_KEY',
       defaultContextWindow: 1000000,
-      defaultMaxTokens: 8192,
-      models: [{ id: 'deepseek-v4.1-flash', contextWindow: 1000000, input: ['text', 'image'] }, ...],   // 来自 GET /v1/models
+      defaultMaxTokens: 128000,
+      models: [{ id: 'deepseek-v4.1-flash', contextWindow: 1000000, maxTokens: 384000, input: ['text', 'image'] }, ...],   // 来自 GET /v1/models
     },
   },
 })
 ```
 
-**为什么每个模型都要写明 `contextWindow` 与 `input`**：pi-ai 的解析顺序是
+**为什么每个模型都要写明 `contextWindow`、`maxTokens` 与 `input`**：pi-ai 的解析顺序是
 `entry.contextWindow ?? 目录值 ?? provider.defaultContextWindow`，`input` 则是
 `declaredInput(entry.input) ?? provider.defaultInput`（`declaredInput` 对**缺省和空数组**都返回
 undefined）。所以只写 provider 级默认值时，模型在选择器里会显示成默认的小窗口、模态退化成纯文本。
-本插件统一给每个模型打上 `contextWindow: 1000000` 和 `input: ['text','image']`，
-provider 级再兜一层 `defaultInput`。注意这不只是标签：`dsh-compaction-basic` 的压缩阈值、
-溢出判定、用量压力百分比都是拿 `contextWindow` 算的，131072 → 1000000 会让压缩推迟约 7.6 倍。
+本插件逐模型声明三者，provider 级再兜一层 `defaultInput`。注意这不只是标签：`dsh-compaction-basic`
+的压缩阈值、溢出判定、用量压力百分比都是拿 `contextWindow` 算的。
+
 图片模态由面板上的「图片输入」开关控制（默认开），关掉后模型只声明 `text`，
 贴图会在附件阶段就被拒绝，而不是等上游在整轮中途报错。
 
-⚠️ **这两个值是本插件标的默认值，不是上游确认的能力。** 中转站 `/v1/models` 只返回
-模型 id，不提供窗口长度与模态，所以 1M 与 text/image 都是假设——面板「能力声明来源」
-一行把这件事写在界面上，避免用户以为站点确认过。若某个模型实际窗口更小，撞墙的是用户
-而不是插件，这一点值得提前说清楚。
+### 上下文窗口与输出上限怎么定（三层取值链）
+
+**`maxTokens` 必须逐模型写，改 provider 级默认值没用。** pi-ai 只把 entry 级的 `maxTokens`
+上报成 `info.defaultMaxTokens`；provider 级的 `defaultMaxTokens` 只是它自己的解析 fallback，
+不会上报。DSH 的 `resolveCallWithInfo()` 用它填请求的默认 `config.maxTokens`，
+`dsh-compaction-basic` 的 `reservedCompletionTokens()` 也读它——所以只改默认值等于没改。
+
+每个模型的容量按以下顺序取，先到先得：
+
+| 顺序 | 来源 | 说明 |
+|---|---|---|
+| 1 | 站点 `/v1/models` 声明的字段 | 认 `context_length` / `max_input_tokens` / `context_window` / `limit.context` 与 `max_output_tokens` / `max_completion_tokens` / `max_tokens` / `top_provider.max_completion_tokens`；字符串数字也收。网关对自己能力的声明最可信 |
+| 2 | pi-ai 官方目录快照 | `src/shared/capacity-table.ts`（自动生成，见下） |
+| 3 | 插件兜底 | 上下文 **1M**、输出 **128K** |
+
+**两边都比、都照用：** 官方值更大就用官方的（`deepseek-v4.1-flash` 输出 384K，不会被压成 128K）；
+官方值更小也用官方的（`hy4-preview` 输出 64K，按 128K 下发会被上游 400）。
+
+**输出上限会被再夹一次：** `dsh-compaction-basic` 要求
+`contextWindow > maxTokens + headroomTokens`（headroom 默认 65536），否则
+`resolveCompactSpec()` 直接抛 `TargetPressureConfigError`，那一轮对话就废了。
+所以声明值超过 `窗口 - 65536` 时会压到那个上限（例如 128K/128K 的模型条目会被压成 128K 窗口 + 62464 输出）。
+
+面板「容量声明来源」一行会写清本次目录里各来源的模型数，避免把猜出来的窗口当成上游承诺。
+
+**刷新官方快照**（升级 DSH / pi-ai 之后）：
+
+```bash
+npm run gen:capacity    # 从已安装的 pi-ai 目录重新生成 src/shared/capacity-table.ts
+npm run build           # 重新打包 lib/
+```
+
+生成规则：同 id 在多个官方 provider 下有不同值时取**众数，票数相同取较小**
+（宁可早压缩，也不要撞墙）。为什么快照而不是运行时读：插件跑在 DSH 宿主里，
+profile 的 `node_modules` 顶层没有 `@earendil-works/pi-ai`（它是 `dsh-llm-pi-ai` 的依赖），
+动态 import 会解析失败并整体退化成兜底值；直接打包又是 5.5MB。
 
 **为什么切组要重挂载**：pi-ai 的 `providers` 是 schemastery 的 volatile 字段，但
 `createVolatile()` 返回的是**冻结快照**，写入通道是内部 symbol（只有 Loader 能提交），

@@ -29,6 +29,7 @@
     "build": "node build.mjs",
     "test": "node --test test/*.test.mjs",
     "prepack": "node build.mjs",
+    "gen:capacity": "node scripts/gen-capacity.mjs",
     "check:screenshots": "node scripts/check-screenshots.mjs"
   },
   "dsh": {

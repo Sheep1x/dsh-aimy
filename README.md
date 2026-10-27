@@ -107,7 +107,7 @@ git clone https://github.com/Sheep1x/dsh-aimy.git
 cd dsh-aimy
 npm install        # 装 esbuild 等构建依赖
 npm run build      # 产出 lib/index.js 与 lib/client.js
-npm test           # 68 项测试（host 54 + client 14）
+npm test           # 87 项测试（host + capacity + client）
 ```
 
 然后在 DSH profile 里装本地目录，并把 `dsh-aimy` 加进 `dsh.profile.bundles`（`~/.dsh/profiles/<profile>/package.json`）。

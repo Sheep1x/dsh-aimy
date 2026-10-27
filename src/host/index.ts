@@ -30,6 +30,7 @@ import { DEFAULT_REASONING_EFFORT } from '../shared/model-profile';
 import { FALLBACK_CONTEXT_WINDOW, FALLBACK_MAX_TOKENS, resolveModels } from './capacity';
 import { removeProviderViaSettings, setDefaultReasoningEffort, writeProviderViaSettings } from './registry';
 import { CatalogStore } from './state';
+import { bindPetBalance } from './balance';
 import { describeError, readState, switchGroup, type RouteDeps } from './routes';
 import type { RelayModel } from '../shared/types';
 
@@ -45,6 +46,18 @@ export {
   resolveModels,
   sameCapacity,
 } from './capacity';
+
+// 余额桥：给 dsh-pet 登记 `onehub` / `onehub-compat` 两条路由的余额查询。
+// 纯函数一并导出，单测直接喂真实报文断言（探测链 + 三种 wire 形状）。
+export {
+  bindPetBalance,
+  buildBalance,
+  fetchBalance,
+  parseBillingPair,
+  parseNewApiTokenUsage,
+  parseUsageBody,
+  readQuota,
+} from './balance';
 
 const ROUTE_PREFIX = '/dsh-aimy-relay';
 
@@ -599,6 +612,26 @@ export function apply(ctx: any, config?: Config): void {
     }
   };
   void warmStart();
+
+  // 余额桥：把本插件挂的两条路由登记进 dsh-pet（可选能力，没装宠物时静默跳过）。
+  //
+  // 目标从 resolve() **现算**：用户在面板里改了兼容模式地址或协议，下一次「查看余额」立刻跟着走，
+  // 不必重启；密钥也每次现取（见 ./balance 的 bindPetBalance 注释）。
+  //
+  // 注意 `ProfileConfig.id` 是**档案 id**（aimy / compat），dsh-pet 要的是**路由名**
+  // （routeName = onehub / onehub-compat）：两者不能混用，否则注册上去的 id 永远对不上当前模型。
+  // 路由名走 resolve() 而不是写死常量，是为了让 cordis.patch.yml 覆盖 routeName 时仍然一致。
+  // 放在 warmStart 之后、webServer 注册之前：这里不依赖任何服务，早挂早生效。
+  const disposeBalance = bindPetBalance(
+    ctx,
+    () =>
+      (['aimy', 'compat'] as ProfileId[]).map((id) => {
+        const profile = resolve(id);
+        return { id: profile.routeName, baseURL: profile.baseURL, apiKeyRef: profile.apiKeyRef };
+      }),
+    (ref) => resolveApiKey(ctx, ref),
+  );
+  ctx.effect(() => () => disposeBalance(), 'dsh-aimy: dispose balance bridge');
 
   ctx.effect(() => () => {
     for (const mount of mounts.values()) void mount.dispose();

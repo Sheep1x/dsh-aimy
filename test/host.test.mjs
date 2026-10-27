@@ -133,6 +133,8 @@ function makeCtx(options = {}) {
       if (name === 'agentDefaultModel') return options.agentDefaultModel ?? fallback;
       if (name === 'llm') return options.llm ?? fallback;
       if (name === 'settings') return options.settings ?? fallback;
+      // 余额桥：dsh-pet 的 petApi7340（可选服务，不在场时插件必须静默跳过）
+      if (name === 'petApi7340') return options.petApi ?? fallback;
       return fallback;
     },
     plugin(plugin, pluginConfig) {
@@ -183,6 +185,7 @@ async function startPlugin(baseURL, dshHome, options = {}) {
     agentDefaultModel: options.agentDefaultModel,
     llm: options.llm,
     settings: options.settings,
+    petApi: options.petApi,
   });
 
   // 和 cordis 一致：配置作为 apply 的第二个参数传入
@@ -1497,6 +1500,119 @@ describe('模型可达性探测', () => {
       );
       assert.equal(body.data.reachability['model-a'], 'ok');
     } finally {
+      await new Promise((r) => relay.server.close(r));
+      rmSync(dshHome, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('余额桥（注册进 dsh-pet）', () => {
+  /** 假 dsh-pet 服务：只实现余额注册表，行为对齐 dsh-pet 的 registerBalanceProvider。 */
+  function makeFakePet() {
+    const registered = new Map();
+    return {
+      registered,
+      api: {
+        balance: {
+          register(def) {
+            if (registered.has(def.id)) throw new Error('该服务商 id 已被注册: ' + def.id);
+            registered.set(def.id, def);
+            return () => registered.delete(def.id);
+          },
+          list: () => ({ builtin: [], external: [...registered.keys()] }),
+        },
+      },
+    };
+  }
+
+  /** 一个只服务余额接口的假站点：/v1/usage 按 one-hub 形态返回。 */
+  function makeBalanceRelay(payload) {
+    const server = createServer((req, res) => {
+      const url = new URL(req.url ?? '/', 'http://localhost');
+      if (url.pathname === '/v1/usage') {
+        if (req.headers.authorization !== 'Bearer ' + KEY) {
+          res.writeHead(401, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: { message: 'invalid key' } }));
+          return;
+        }
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify(payload));
+        return;
+      }
+      res.writeHead(404, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ success: false, message: 'not found' }));
+    });
+    return server;
+  }
+
+  it('apply() 时把 onehub 与 onehub-compat 都登记进去，fetch 能查到余额', async () => {
+    const dshHome = mkdtempSync(join(tmpdir(), 'dsh-aimy-balance-'));
+    const relay = makeRelay({ supportsSwitch: true });
+    const balanceRelay = makeBalanceRelay({ is_active: true, remaining: 150.054336, unit: 'USD' });
+    await new Promise((r) => relay.server.listen(0, '127.0.0.1', r));
+    await new Promise((r) => balanceRelay.listen(0, '127.0.0.1', r));
+    const pet = makeFakePet();
+    let plugin;
+
+    try {
+      const baseURL = 'http://127.0.0.1:' + relay.server.address().port;
+      plugin = await startPlugin(baseURL, dshHome, { petApi: pet.api });
+
+      // 注册是 apply() 里同步完成的：无需点面板
+      assert.deepEqual([...pet.registered.keys()].sort(), ['onehub', 'onehub-compat']);
+
+      // 兼容模式没配地址 → 明确报错（不静默、不返回 0）
+      await assert.rejects(pet.registered.get('onehub-compat').fetch({ provider: 'onehub-compat' }), /还没有配置地址/);
+
+      // 预设档案指向假中转站（它只有 /v1/models，没有余额接口）→ 三档全失败
+      await assert.rejects(pet.registered.get('onehub').fetch({ provider: 'onehub' }), /未提供可用的余额接口/);
+    } finally {
+      if (plugin) await new Promise((r) => plugin.server.close(r));
+      await new Promise((r) => relay.server.close(r));
+      await new Promise((r) => balanceRelay.close(r));
+      rmSync(dshHome, { recursive: true, force: true });
+    }
+  });
+
+  it('站点提供 /v1/usage 时返回 money 形状（含 fullBalance 所需的总额）', async () => {
+    const dshHome = mkdtempSync(join(tmpdir(), 'dsh-aimy-balance2-'));
+    const balanceRelay = makeBalanceRelay({ is_active: true, remaining: 150.054336, unit: 'USD' });
+    await new Promise((r) => balanceRelay.listen(0, '127.0.0.1', r));
+    const pet = makeFakePet();
+    let plugin;
+
+    try {
+      const baseURL = 'http://127.0.0.1:' + balanceRelay.address().port;
+      plugin = await startPlugin(baseURL, dshHome, { petApi: pet.api });
+
+      const wire = await pet.registered.get('onehub').fetch({ provider: 'onehub' });
+      assert.equal(wire.shape, 'money');
+      assert.equal(wire.provider, 'onehub');
+      assert.equal(wire.data.wallets[0].currency, 'USD');
+      assert.equal(wire.data.wallets[0].total, '150.05');
+      // 该假站点没有 billing 接口 → 拿不到基准，于是不写 fullBalance（不猜一个）
+      assert.equal('fullBalance' in wire.data.wallets[0], false);
+    } finally {
+      if (plugin) await new Promise((r) => plugin.server.close(r));
+      await new Promise((r) => balanceRelay.close(r));
+      rmSync(dshHome, { recursive: true, force: true });
+    }
+  });
+
+  it('没有 dsh-pet 时插件照常工作（余额桥静默缺席）', async () => {
+    const dshHome = mkdtempSync(join(tmpdir(), 'dsh-aimy-nopet-'));
+    const relay = makeRelay({ supportsSwitch: true });
+    await new Promise((r) => relay.server.listen(0, '127.0.0.1', r));
+    let plugin;
+
+    try {
+      const baseURL = 'http://127.0.0.1:' + relay.server.address().port;
+      plugin = await startPlugin(baseURL, dshHome); // 不传 petApi
+      const { status, body } = await json(plugin.base + '/state');
+      assert.equal(status, 200);
+      assert.equal(body.success, true);
+    } finally {
+      if (plugin) await new Promise((r) => plugin.server.close(r));
       await new Promise((r) => relay.server.close(r));
       rmSync(dshHome, { recursive: true, force: true });
     }

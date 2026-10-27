@@ -52,6 +52,7 @@ DSH（DeepSeek Harness）插件 **dsh-Aimy**：解决中转站多分组多倍率
 - ✅ P4-2：「当前选中模型不在新分组」提示（只提示，不自动改选）
 - ✅ 双档案：Aimy-艾米（地址隐藏的预设）+ 兼容模式（自填 URL/协议，适配 new-api / sub2api）
 - ✅ 模型能力声明：逐模型标注 1M 上下文与文本/图片输入，面板可开关图片
+- ✅ 余额桥：装 [dsh-pet](https://github.com/PC2005-cloud/dsh-pet) 时，宠物的「查看余额」直接读本站额度
 - ✅ 已发布 npm：`dsh-aimy`
 
 ## 安装
@@ -244,6 +245,35 @@ host 半侧在 `/dsh-aimy-relay` 前缀下暴露（仅供本插件的浏览器�
 | POST | `/credentials` | `{ "apiKey": "sk-…" }` 写入凭据库并立即探测/挂载 |
 | DELETE | `/credentials` | 清除凭据库中的密钥 |
 
+## 余额桥（可选，配合 dsh-pet）
+
+装了 [dsh-pet](https://github.com/PC2005-cloud/dsh-pet) 时，宠物右键菜单的「查看余额」与本插件联动：
+本插件把自己挂的两条路由（`onehub` / `onehub-compat`）登记进 dsh-pet 的余额注册表
+（`ctx.provide('petApi7340').balance.register`），于是宠物读的就是**本站额度**，而不是「当前服务商暂不支持余额查询」。
+
+为什么放在本插件而不是 dsh-pet：余额按「provider id」寻址，id 是挂路由的人起的；
+中转站的地址与密钥也只在本插件手里（dsh-pet 的第三方契约刻意不给 key）。
+
+**探测链**（兼容模式可能填任何 OpenAI 兼容网关，所以按顺序试，第一个成功即返回）：
+
+| 顺序 | 端点 | 适用站点 | 说明 |
+|---|---|---|---|
+| ① | `GET /v1/usage` | one-hub（本站）、sub2api | **同名不同构**：one-hub 是扁平 `{is_active, remaining, unit}`；sub2api 是 `{mode, remaining, quota?, subscription?, rate_limits?}` |
+| ② | `GET /v1/dashboard/billing/subscription` + `/usage` | one-hub、new-api | `hard_limit_usd`（总额）− `total_usage`（美分）/100 = 剩余 |
+| ③ | `GET /api/usage/token/` | new-api | 令牌级明细 `total_granted / total_used / total_available` |
+
+三档全失败就报「该站点未提供可用的余额接口」并附每一档的原因 —— **绝不伪造 0 余额**。
+
+展示形态按拿到的数据决定：
+
+- `windows`：sub2api 订阅模式给了日/周/月三窗 → 宠物播档位 + 「X额度已用 N%」；
+- `money`：拿到 USD 金额 + 总额基准 → 「余额（峰/谷）$x.xx」+ 档位动画；
+- `points`：站点关掉「以货币显示」（`unit: 'quota'`）→ 原样显示数字，不套货币符号。
+
+若 `fullBalance` 拿不到（站点没有 billing 接口），气泡只显示金额、不播档位动画 —— 不替站点猜一个基准。
+
+没装 dsh-pet 时这一段静默跳过，插件其余功能不受影响。
+
 ## 测试
 
 ```bash
@@ -252,6 +282,7 @@ host 半侧在 `/dsh-aimy-relay` 前缀下暴露（仅供本插件的浏览器�
 
 
 - `test/host.test.mjs`：host 路由与挂载（假中转站 + 假 cordis ctx）
+- `test/balance.test.mjs`：余额桥（三站真实报文形状 + 探测链 + 三种 wire 形状 + 注册幂等）
 - `test/client.test.mjs`：client 半侧（走 `window.__ModuleLoader__` 契约，假 hooks 渲染真 React 元素树）
   - 三条注册齐全、侧栏 id 必须等于 `main` 的 key
   - 侧栏图标是 svg 且跟随 `size`/`active`
@@ -260,11 +291,12 @@ host 半侧在 `/dsh-aimy-relay` 前缀下暴露（仅供本插件的浏览器�
   - 协议下拉三选项齐全、暗色适配、切换会 POST 保存
   - 图片输入开关默认勾选、取消后只提交 `{imageInput}`
 
-host 覆盖（54 项）：正常读取 / 真实切组 / 模型路由挂载 / 切组后重挂载 / 同分组不重挂载 / 中转站报错透传 /
+host 覆盖（57 项）：正常读取 / 真实切组 / 模型路由挂载 / 切组后重挂载 / 同分组不重挂载 / 中转站报错透传 /
 空分组拦截 / 旧版站点降级 / 未配置密钥 / 保存密钥后自动挂载 / 空密钥拒绝 / 清除密钥 /
 模型失效判定（在目录内 / 切走后失效 / 切回恢复 / 指向别的路由不误报）/
 模型能力声明（1M 上下文 + 文本/图片模态 + cost + 思考档位）/ 关掉图片开关后只声明 text 并落盘 /
-探测端点跟随线路协议（responses / completions / anthropic 三条回归）。
+探测端点跟随线路协议（responses / completions / anthropic 三条回归）/
+余额桥（两条路由都登记、fetch 返回 wire 形状、没装 dsh-pet 时静默缺席）。
 
 ## 结构
 

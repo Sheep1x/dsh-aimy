@@ -462,6 +462,60 @@ profile 的 `node_modules` 顶层没有 `@earendil-works/pi-ai`（它是 `dsh-ll
 插件侧无法原地修改。所以目录变化时 dispose 旧 fiber、用新配置再挂一次；
 模型集合未变时短路跳过（避免无意义抖动）。
 
+## 发布
+
+手动发布，不再依赖脚本。按顺序执行，任一步失败就停下。
+
+```bash
+cd dsh-aimy
+
+# 1) 工作区必须干净：lib/ 是提交进仓库的构建产物，忘了提交就会发出旧代码
+git status --porcelain          # 应无输出
+node build.mjs                  # 重新构建
+git status --porcelain -- lib/  # 应无输出；有输出说明 lib/ 与源码不同步，先提交
+
+# 2) 测试
+npm test                        # 应全绿
+
+# 3) 升版本（同一个版本号 npm 不允许覆盖）
+npm view dsh-aimy@<版本> version # 报 404 才是没发布过
+npm version <版本> --no-git-tag-version
+node build.mjs && git add -A
+git commit -m "chore: 版本号升到 <版本>"
+git push origin main
+
+# 4) 打包预检（prepack 会自动重跑 build.mjs）
+npm pack --dry-run              # 确认 lib/index.js、lib/client.js、cordis.patch.yml、screenshots.json 都在
+
+# 5) 登录并发布
+npm login                       # token 失效时会 401，重登即可
+npm publish --access public     # 有 2FA：npm publish --access public --otp 123456
+
+# 6) 复核
+npm view dsh-aimy version       # 应等于刚发布的版本
+npm view dsh-aimy dist-tags     # latest 应指向它
+```
+
+**版本号规则**：改默认行为（如默认输出上限、容量取值）用次要版本 `0.x.0`；
+纯修复或纯性能优化用补丁版本 `0.x.y`。
+
+**发布失败常见两种**：
+
+- `EOTP` —— 需要一次性密码，按提示在浏览器授权，或从验证器取 6 位码加 `--otp`。
+- `E403` —— 账号 2FA 策略与 token 权限不匹配。到 npm 网站创建一个
+  **Automation** 类型的 token（可绕过 OTP），写进 `~/.npmrc` 的
+  `//registry.npmjs.org/:_authToken=...` 后再发布。
+
+**装回本机**（profile 里装的不会自动更新）：
+
+```bash
+cd ~/.dsh/profiles/desktop
+pnpm add dsh-aimy@<版本>
+```
+
+若 pnpm 的 `minimumReleaseAge` 拦住刚发布的版本，把它加进该 profile
+`pnpm-workspace.yaml` 的 `minimumReleaseAgeExclude`。
+
 ## License
 
 [MIT](LICENSE) © Sheep1x

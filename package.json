@@ -1,6 +1,6 @@
 {
   "name": "dsh-aimy",
-  "version": "0.4.1",
+  "version": "0.4.2",
   "description": "dsh-Aimy — 解决中转站多分组多倍率不方便管理的问题：提供分组接口的站点可就地切组并同步刷新模型与倍率，缺少该接口的站点自动降级为只读（兼容 new-api / sub2api）",
   "type": "module",
   "main": "lib/index.js",

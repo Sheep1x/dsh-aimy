@@ -158,3 +158,23 @@ export function emptyState(baseURL: string, overrides: Partial<PluginState> = {}
     staleModel: false,
   };
 }
+
+/**
+ * 是否需要拉取诊断信息。
+ *
+ * 诊断内容（注册表是否注册、路由模型数、密钥解析、settings 通道）只是排障线索，
+ * 正常状态下没有价值，但每次拉取要 `llm.listModels()` + `settings.describe()`，
+ * 实测 370–580ms。所以只在**真出问题**时才拉：未连接、未配置密钥、未挂载、有错误。
+ *
+ * 放在 shared 而不是 client：这是纯判断，好单测，也避免把条件散落在 effect 里。
+ */
+export function needsDiagnostics(state: PluginState | null): boolean {
+  if (!state) return false; // 还没有状态：等 /state 回来再说
+  if (state.error) return true;
+  if (!state.configured) return true;
+  if (!state.credential || !state.credential.configured) return true;
+  if (!state.connected) return true;
+  if (!state.provider || !state.provider.mounted) return true;
+  if (state.provider.error) return true;
+  return false;
+}

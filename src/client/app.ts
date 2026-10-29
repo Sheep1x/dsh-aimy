@@ -3,6 +3,7 @@
  * 页面本身在 section.ts，这里只做装配。
  */
 import { BRAND_ICON_PATH } from '../shared/brand';
+import { needsDiagnostics } from '../shared/types';
 import { makeSection } from './section';
 import type * as ReactNS from 'react';
 
@@ -84,7 +85,9 @@ export function makeFactory(): (require: (mod: string) => any) => any {
       });
     }
 
-    module.exports = { apply, inject, name };
+    // needsDiagnostics 一并导出：纯判断，供单测直接验证「什么状态才值得拉诊断」。
+    // DSH 只用 apply / inject / name，多导出一个不影响契约。
+    module.exports = { apply, inject, name, needsDiagnostics };
     return module.exports;
   };
 }

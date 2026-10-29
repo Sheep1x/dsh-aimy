@@ -6,7 +6,14 @@
  * 样式只用 CSS 变量 --dsw-alias-*（主题跟随亮/暗），不依赖 UI 组件库。
  */
 import { BRAND_ICON_PATH } from '../shared/brand';
-import { API_OPTIONS, DEFAULT_API, type PluginState, type ProfileId, type RelayApi } from '../shared/types';
+import {
+  API_OPTIONS,
+  DEFAULT_API,
+  needsDiagnostics,
+  type PluginState,
+  type ProfileId,
+  type RelayApi,
+} from '../shared/types';
 
 export interface SectionDeps {
   h: (type: any, props: any, ...children: any[]) => any;
@@ -350,8 +357,17 @@ export function makeSection(deps: SectionDeps) {
      *
      * 它要调 llm.listModels()，慢但只用于排障：拉到就显示，拉不到就算了，
      * 绝不让面板为它多等一帧。放在 /state 里会让每次打开面板都白等一次。
-     */
+     *
+     * **只在出问题时才拉**：正常状态下这行诊断没有价值，却要付 370–580ms。
+     * 判断集中在 shared/types.ts 的 needsDiagnostics()，好测也好读。
+ */
+    const diagnosticsWanted = needsDiagnostics(state);
     useEffect(() => {
+      if (!diagnosticsWanted) {
+        // 状态已恢复正常：把上次留下的旧诊断清掉，免得显示过期信息
+        setDiagnostics((prev) => (prev === null ? prev : null));
+        return undefined;
+      }
       let alive = true;
       void request('/diagnostics?profile=' + tab)
         .then((res) => {
@@ -363,7 +379,7 @@ export function makeSection(deps: SectionDeps) {
       return () => {
         alive = false;
       };
-    }, [tab]);
+    }, [tab, diagnosticsWanted]);
 
     const saveKey = useCallback(async () => {
       const value = keyInput.trim();

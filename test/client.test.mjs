@@ -34,6 +34,8 @@ function createHookRuntime() {
   return {
     hooks: { useState, useCallback, useEffect, useMemo },
     reset() { cursor = 0; effects = []; },
+    /** 清空状态槽：需要「从零开始渲染」的用例用它，避免继承前面用例的状态。 */
+    resetState() { stateSlots.length = 0; cursor = 0; pending = []; effects = []; },
     takeEffects() { const taken = effects; effects = []; return taken; },
     applyPending() {
       const had = pending.length > 0;
@@ -459,5 +461,68 @@ describe('dsh-aimy client', () => {
     assert.ok(text.includes('1 个不可用') || text.includes('1 个未确认不可用'), '应报出不可用计数，实际：' + text.slice(0, 600));
     // 暂时性故障不能算进不可用
     assert.ok(!text.includes('2 个不可用'), '5xx/429 不该被算成不可用');
+  });
+
+  it('正常状态不拉诊断信息（每次进面板省掉一次 370–580ms 的请求）', async () => {
+    // 从干净状态开始：前面的用例会把状态槽填满，残留一个未连接状态会误触发诊断
+    runtime.resetState();
+    const urls = [];
+    const healthy = {
+      ...stateBody,
+      connected: true,
+      configured: true,
+      credential: { configured: true, writable: true },
+      provider: { routeName: 'onehub', mounted: true, modelCount: 2 },
+    };
+    globalThis.fetch = async (url) => {
+      urls.push(String(url));
+      return { text: async () => JSON.stringify({ success: true, data: healthy }) };
+    };
+
+    const Panel = registry.entries.get('main:dsh-aimy').component;
+    await mount(Panel);
+
+    assert.ok(
+      urls.some((u) => u.includes('/state')),
+      '至少要拉一次 /state，实际：' + urls.join(', '),
+    );
+    assert.ok(
+      !urls.some((u) => u.includes('/diagnostics')),
+      '正常状态不该拉诊断，实际请求：' + urls.join(', '),
+    );
+  });
+
+  describe('needsDiagnostics：什么状态才值得拉诊断', () => {
+    /** 一个完全正常的状态：已连接、密钥已配、路由已挂载、无错误。 */
+    const healthy = {
+      ...stateBody,
+      connected: true,
+      configured: true,
+      credential: { configured: true, writable: true },
+      provider: { routeName: 'onehub', mounted: true, modelCount: 2 },
+    };
+
+    it('完全正常时返回 false', () => {
+      assert.equal(module.needsDiagnostics(healthy), false);
+    });
+
+    it('还没有状态时返回 false（等 /state 回来再说）', () => {
+      assert.equal(module.needsDiagnostics(null), false);
+    });
+
+    for (const [label, patch] of [
+      ['有错误', { error: '挂载失败' }],
+      ['未连接', { connected: false }],
+      ['未配置密钥', { credential: { configured: false, writable: true } }],
+      ['密钥缺失', { credential: null }],
+      ['未挂载', { provider: null }],
+      ['路由未挂上', { provider: { routeName: 'onehub', mounted: false, modelCount: 0 } }],
+      ['挂载报错', { provider: { routeName: 'onehub', mounted: true, modelCount: 0, error: 'boom' } }],
+      ['地址未配置', { configured: false }],
+    ]) {
+      it(label + '时返回 true', () => {
+        assert.equal(module.needsDiagnostics({ ...healthy, ...patch }), true, label + ' 应触发诊断');
+      });
+    }
   });
 });

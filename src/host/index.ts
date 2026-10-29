@@ -29,7 +29,7 @@ import {
 import { DEFAULT_REASONING_EFFORT } from '../shared/model-profile';
 import { FALLBACK_CONTEXT_WINDOW, FALLBACK_MAX_TOKENS, resolveModels } from './capacity';
 import { removeProviderViaSettings, setDefaultReasoningEffort, writeProviderViaSettings } from './registry';
-import { CatalogStore } from './state';
+import { CatalogStore, GroupCache } from './state';
 import { bindPetBalance } from './balance';
 import { describeError, readState, switchGroup, type RouteDeps } from './routes';
 import type { RelayModel } from '../shared/types';
@@ -46,6 +46,8 @@ export {
   resolveModels,
   sameCapacity,
 } from './capacity';
+// 分组缓存：单测直接验证 TTL / stale-while-revalidate / 去重策略
+export { GroupCache, GROUP_CACHE_TTL_MS } from './state';
 
 // 余额桥：给 dsh-pet 登记 `onehub` / `onehub-compat` 两条路由的余额查询。
 // 纯函数一并导出，单测直接喂真实报文断言（探测链 + 三种 wire 形状）。
@@ -335,6 +337,8 @@ function parseJson(raw: string): Record<string, unknown> | undefined {
 export function apply(ctx: any, config?: Config): void {
   const catalogs = new CatalogStore();
   catalogs.load();
+  /** 分组信息缓存：让面板打开不必等 `/v1/token/group` 的网络往返。 */
+  const groupCache = new GroupCache();
   const settings = new ProfileSettingsStore();
   settings.load();
 
@@ -533,6 +537,7 @@ export function apply(ctx: any, config?: Config): void {
       apiKey: await resolveApiKey(ctx, profile.apiKeyRef, inline),
       api: profile.api,
       store: catalogs,
+      groupCache,
       provider: mounts.get(profile.id) ?? settingsMountShim(profile.id),
       syncProvider: (models) => syncProvider(profile, models),
       remountProvider: (models) => remountProvider(profile, models),
@@ -672,9 +677,21 @@ export function apply(ctx: any, config?: Config): void {
             const deps = await buildDeps(profile);
 
             if (method === 'GET' && route === '/state') {
+              // 诊断信息单独走 /diagnostics：它只是一行排障文本，客户端会后台补拉。
+              // 放在这里会让面板每次打开都多等一次 llm.listModels()。
               const state = withProvider(decorate(await readState(deps), profile), profile);
-              (state as any).diagnostics = await readDiagnostics(ctx, profile.routeName, profile.apiKeyRef, readConfig(config).settingsNs ?? DEFAULT_SETTINGS_NS);
               sendJson(res, 200, { success: true, data: state });
+              return;
+            }
+
+            if (method === 'GET' && route === '/diagnostics') {
+              const report = await readDiagnostics(
+                ctx,
+                profile.routeName,
+                profile.apiKeyRef,
+                readConfig(config).settingsNs ?? DEFAULT_SETTINGS_NS,
+              );
+              sendJson(res, 200, { success: true, data: report });
               return;
             }
 

@@ -51,8 +51,9 @@ DSH（DeepSeek Harness）插件 **dsh-Aimy**：解决中转站多分组多倍率
 - ✅ P4-1：面板里直接填密钥（写 DSH 凭据库，write-only），保存后立即探测并挂载模型
 - ✅ P4-2：「当前选中模型不在新分组」提示（只提示，不自动改选）
 - ✅ 双档案：Aimy-艾米（地址隐藏的预设）+ 兼容模式（自填 URL/协议，适配 new-api / sub2api）
-- ✅ 模型能力声明：逐模型标注 1M 上下文与文本/图片输入，面板可开关图片
+- ✅ 模型能力声明：逐模型解析真实容量（站点声明 → 官方目录 → 兜底 1M/128K），面板可开关图片
 - ✅ 余额桥：装 [dsh-pet](https://github.com/PC2005-cloud/dsh-pet) 时，宠物的「查看余额」直接读本站额度
+- ✅ 分组信息缓存（TTL 5 分钟 + stale-while-revalidate），面板热路径 1–8ms
 - ✅ 已发布 npm：`dsh-aimy`
 
 ## 安装
@@ -108,7 +109,7 @@ git clone https://github.com/Sheep1x/dsh-aimy.git
 cd dsh-aimy
 npm install        # 装 esbuild 等构建依赖
 npm run build      # 产出 lib/index.js 与 lib/client.js
-npm test           # 87 项测试（host + capacity + client）
+npm test           # 136 项测试（host + capacity + group-cache + client）
 ```
 
 然后在 DSH profile 里装本地目录，并把 `dsh-aimy` 加进 `dsh.profile.bundles`（`~/.dsh/profiles/<profile>/package.json`）。
@@ -239,11 +240,18 @@ host 半侧在 `/dsh-aimy-relay` 前缀下暴露（仅供本插件的浏览器�
 
 | 方法 | 路径 | 说明 |
 |---|---|---|
-| GET | `/state` | 当前分组、倍率、可选分组、模型目录（命中缓存时不打网络） |
+| GET | `/state` | 当前分组、倍率、可选分组、模型目录（分组 5 分钟内直读缓存，模型目录命中缓存时不打网络） |
+| GET | `/diagnostics` | 排障用的注册表/凭据/设置通道自检；面板后台拉取，不参与 `/state` 渲染 |
 | POST | `/refresh` | 强制重新拉取分组与模型目录 |
 | POST | `/switch` | `{ "group": "vip" }` 真实切组，随后刷新目录 |
 | POST | `/credentials` | `{ "apiKey": "sk-…" }` 写入凭据库并立即探测/挂载 |
 | DELETE | `/credentials` | 清除凭据库中的密钥 |
+
+**为什么分组信息要缓存**：`/v1/token/group` 的长尾很差（实测 12 次里最高 2158ms，中位数约 38ms），
+而它只影响「切换分组」那块 UI，与模型目录、密钥状态、挂载状态都无关。不缓存的话，面板每次
+打开都要为它排一次队。策略是 **TTL 5 分钟 + stale-while-revalidate**：新鲜期内零网络；
+过期后先返回旧值、后台异步刷新；用户点「刷新」时仍等真实网络。实测 `/state` 热路径
+从 34–285ms 降到 1–8ms。
 
 ## 余额桥（可选，配合 dsh-pet）
 
@@ -282,6 +290,8 @@ host 半侧在 `/dsh-aimy-relay` 前缀下暴露（仅供本插件的浏览器�
 
 
 - `test/host.test.mjs`：host 路由与挂载（假中转站 + 假 cordis ctx）
+- `test/capacity.test.mjs`：容量取值链（站点声明 → 官方目录 → 兜底）、压缩 headroom 夹取、幂等
+- `test/group-cache.test.mjs`：分组缓存（TTL / stale-while-revalidate / 刷新去重 / 404 记住 / 抖动不缓存）
 - `test/balance.test.mjs`：余额桥（三站真实报文形状 + 探测链 + 三种 wire 形状 + 注册幂等）
 - `test/client.test.mjs`：client 半侧（走 `window.__ModuleLoader__` 契约，假 hooks 渲染真 React 元素树）
   - 三条注册齐全、侧栏 id 必须等于 `main` 的 key
@@ -303,8 +313,10 @@ host 覆盖（57 项）：正常读取 / 真实切组 / 模型路由挂载 / 切
 ```text
 src/
   shared/types.ts     两侧共用类型
+  shared/capacity-table.ts  官方容量快照（自动生成，npm run gen:capacity）
   host/relay.ts       中转站 HTTP 客户端（错误归一）
-  host/state.ts       模型目录缓存（$DSH_HOME/dsh-aimy/state.json，仅非密钥）
+  host/capacity.ts    逐模型容量解析（站点声明 → 官方目录 → 兜底，含压缩 headroom 夹取）
+  host/state.ts       模型目录缓存（state.json）+ 分组信息缓存（内存，TTL 5 分钟）
   host/routes.ts      /dsh-aimy-relay/* 的纯函数编排
   host/index.ts       Cordis 插件入口（name / inject / apply）
   client/index.ts     __ModuleLoader__ 外壳

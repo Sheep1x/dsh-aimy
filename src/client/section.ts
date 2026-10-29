@@ -305,6 +305,15 @@ export function makeSection(deps: SectionDeps) {
     const [compatApi, setCompatApi] = useState<RelayApi>(DEFAULT_API);
 
     const state = (states[tab] ?? null) as PluginState | null;
+    /**
+     * 诊断信息单独一个状态槽。
+     *
+     * 为什么不塞进 states：它内部要调 llm.listModels()，是排障用的附加信息，
+     * 不该参与主状态的更新——混在一起会让「主内容先渲染」这件事变得不可靠
+     * （先 putState 再补 diagnostics 会产生第二次 states 更新，动作顺序一变
+     * 面板就可能停在空状态）。分开两个槽，主状态只由 /state 写。
+     */
+    const [diagnostics, setDiagnostics] = useState<Record<string, unknown> | null>(null);
 
     const putState = useCallback((id: string, next: PluginState | null) => {
       setStates((prev: Record<string, PluginState | null>) => ({ ...prev, [id]: next }));
@@ -334,6 +343,26 @@ export function makeSection(deps: SectionDeps) {
 
     useEffect(() => {
       void load(tab, false);
+    }, [tab]);
+
+    /**
+     * 诊断信息在**独立的 effect** 里拉，与主状态完全解耦。
+     *
+     * 它要调 llm.listModels()，慢但只用于排障：拉到就显示，拉不到就算了，
+     * 绝不让面板为它多等一帧。放在 /state 里会让每次打开面板都白等一次。
+     */
+    useEffect(() => {
+      let alive = true;
+      void request('/diagnostics?profile=' + tab)
+        .then((res) => {
+          if (alive && res && res.data) setDiagnostics(res.data as Record<string, unknown>);
+        })
+        .catch(() => {
+          // 诊断拉不到不影响任何功能
+        });
+      return () => {
+        alive = false;
+      };
     }, [tab]);
 
     const saveKey = useCallback(async () => {
@@ -671,20 +700,20 @@ export function makeSection(deps: SectionDeps) {
         ? h('div', { style: S.err }, state.provider.error)
         : null,
       state && state.error ? h('div', { style: S.err }, state.error) : null,
-      state && (state as any).diagnostics
+      diagnostics
         ? h(
             'div',
             { style: S.hint },
             '诊断：注册表 ' +
-              String((state as any).diagnostics.registryPresent) +
+              String(diagnostics.registryPresent) +
               ' · 路由模型 ' +
-              String((state as any).diagnostics.registryModels ?? '—') +
+              String(diagnostics.registryModels ?? '—') +
               ' · 密钥 ' +
-              String((state as any).diagnostics.credentialResolve ?? '—') +
+              String(diagnostics.credentialResolve ?? '—') +
               ' · settings ' +
-              String((state as any).diagnostics.settingsChannel ?? '—') +
+              String(diagnostics.settingsChannel ?? '—') +
               ' · providers ' +
-              JSON.stringify((state as any).diagnostics.providers ?? []),
+              JSON.stringify(diagnostics.providers ?? []),
           )
         : null,
     );

@@ -7,7 +7,7 @@ import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 
-import type { RelayModel } from '../shared/types';
+import type { RelayModel, TokenGroupState } from '../shared/types';
 
 export interface CachedCatalog {
   baseURL: string;
@@ -87,4 +87,86 @@ function isCatalog(value: unknown): value is CachedCatalog {
   if (!value || typeof value !== 'object') return false;
   const c = value as Record<string, unknown>;
   return typeof c.baseURL === 'string' && typeof c.group === 'string' && Array.isArray(c.models);
+}
+
+/**
+ * 面板加载耗时的主因：分组信息每次都要联网。
+ *
+ * `/v1/token/group` 实测长尾很难看（12 次里最高 2158ms，中位数约 38ms），
+ * 而面板每次打开都会等它——可它只影响「切换分组」那一块 UI，与模型目录、
+ * 密钥状态、挂载状态都无关。分组信息又是长期稳定的（一天可能都不变），
+ * 每次都重新问一遍纯属白等。
+ *
+ * 缓存策略：TTL 内直接用；过期后**先返回旧值，再后台异步刷新**
+ * （stale-while-revalidate）。用户永远不为这个请求排队，代价是分组信息
+ * 最多陈旧 5 分钟——而分组变化本来就不是需要秒级感知的东西。
+ *
+ * 只放内存，不落盘：倍率与可选分组属于易变信息，跨进程复用意义不大。
+ */
+export interface CachedGroup {
+  state: TokenGroupState;
+  fetchedAt: number;
+}
+
+/** 分组信息的新鲜期（毫秒）。 */
+export const GROUP_CACHE_TTL_MS = 5 * 60_000;
+
+export class GroupCache {
+  private readonly entries = new Map<string, CachedGroup>();
+  /** 正在后台刷新的 key，避免同一站点并发打多次。 */
+  private readonly refreshing = new Set<string>();
+  /** 不支持分组接口的站点（404）：记住结论，别每次打开面板都撞一遍。 */
+  private readonly unsupported = new Set<string>();
+
+  constructor(private readonly now: () => number = () => Date.now()) {}
+
+  /** 读取缓存，不触发任何网络。 */
+  peek(baseURL: string): CachedGroup | undefined {
+    return this.entries.get(baseURL);
+  }
+
+  /** 缓存是否仍在新鲜期内。 */
+  fresh(baseURL: string): boolean {
+    const hit = this.entries.get(baseURL);
+    return hit !== undefined && this.now() - hit.fetchedAt < GROUP_CACHE_TTL_MS;
+  }
+
+  /** 该站点已确认没有分组接口。 */
+  knownUnsupported(baseURL: string): boolean {
+    return this.unsupported.has(baseURL);
+  }
+
+  /** 记住「该站点没有分组接口」这个结论。 */
+  markUnsupported(baseURL: string): void {
+    this.unsupported.add(baseURL);
+    this.entries.delete(baseURL);
+  }
+
+  set(baseURL: string, state: TokenGroupState): void {
+    this.entries.set(baseURL, { state, fetchedAt: this.now() });
+    this.unsupported.delete(baseURL);
+  }
+
+  /** 切组成功后直接更新，省掉一次后台刷新（切组响应里已带最新分组信息）。 */
+  apply(baseURL: string, state: TokenGroupState): void {
+    this.set(baseURL, state);
+  }
+
+  /** 占位：返回 false 表示已有刷新在跑，调用方不必重复发起。 */
+  beginRefresh(baseURL: string): boolean {
+    if (this.refreshing.has(baseURL)) return false;
+    this.refreshing.add(baseURL);
+    return true;
+  }
+
+  endRefresh(baseURL: string): void {
+    this.refreshing.delete(baseURL);
+  }
+
+  /** 仅供测试：清空全部状态。 */
+  clear(): void {
+    this.entries.clear();
+    this.unsupported.clear();
+    this.refreshing.clear();
+  }
 }

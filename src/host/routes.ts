@@ -2,7 +2,7 @@
 import { RelayError, fetchModels, fetchTokenGroup, probeModels, switchTokenGroup, type RelayOptions } from './relay';
 import { resolveModels } from './capacity';
 import type { ProviderMount } from './provider';
-import type { CatalogStore } from './state';
+import type { CatalogStore, GroupCache } from './state';
 import {
   emptyState,
   type CredentialStatus,
@@ -10,6 +10,7 @@ import {
   type PluginState,
   type RelayApi,
   type SwitchResult,
+  type TokenGroupState,
 } from '../shared/types';
 
 export interface RouteDeps {
@@ -21,6 +22,12 @@ export interface RouteDeps {
   /** 线路协议：探测请求据此选端点，必须与真实调用一致 */
   api?: RelayApi;
   store: CatalogStore;
+  /**
+   * 分组信息缓存。分组只影响「切换分组」那块 UI，却要靠一次网络往返才能拿到，
+   * 而 `/v1/token/group` 长尾很差（实测最高 2s+）。不缓存的话，面板每次打开
+   * 都在为它排队。缺省不缓存时行为退回「每次都问」。
+   */
+  groupCache?: GroupCache;
   /** 已挂载的模型路由（可选：未挂载时状态里 provider 为 null）*/
   provider?: ProviderMount;
   /** 密钥存储状态（由入口注入，routes 不直接依赖凭据服务）*/
@@ -84,6 +91,61 @@ function providerState(
   };
 }
 
+/**
+ * 取分组信息，**优先用缓存，不阻塞面板**。
+ *
+ * 策略（对照 GROUP_CACHE_TTL_MS 的注释）：
+ *   - 新鲜缓存        → 直接返回，零网络
+ *   - 过期缓存        → 先返回旧值，后台异步刷新（stale-while-revalidate）
+ *   - 无缓存 + 明确刷新 → 等一次网络（首次或用户点了刷新，必须拿准）
+ *   - 无缓存 + 普通打开 → 也等一次（否则首次打开看不到分组，体验更差）
+ *
+ * `refresh=true` 时永远等真实网络：用户点「刷新」就是要最新数据。
+ *
+ * @returns 分组状态；站点没有该接口时返回 { token: null, supported: false }
+ */
+async function resolveTokenGroup(
+  deps: RouteDeps,
+  refresh: boolean,
+): Promise<{ token: TokenGroupState | null; supported: boolean }> {
+  const cache = deps.groupCache;
+  const key = deps.baseURL;
+
+  // 已确认站点没有分组接口：不再重复撞
+  if (cache && cache.knownUnsupported(key)) {
+    return { token: null, supported: false };
+  }
+
+  const hit = cache?.peek(key);
+  if (hit && !refresh) {
+    // 新鲜期外：先给旧值，后台补一次（不 await）
+    if (!cache!.fresh(key) && cache!.beginRefresh(key)) {
+      void fetchTokenGroup(opts(deps))
+        .then((token) => cache!.apply(key, token))
+        .catch((error) => {
+          // 404 说明站点确实没这接口，记住结论；其它错误（网络抖动）不写缓存，
+          // 让下次打开面板再试，避免把一次抖动固化成「不支持」。
+          if (error instanceof RelayError && error.kind === 'not-found') {
+            cache!.markUnsupported(key);
+          }
+        })
+        .finally(() => cache!.endRefresh(key));
+    }
+    return { token: hit.state, supported: true };
+  }
+
+  try {
+    const token = await fetchTokenGroup(opts(deps));
+    cache?.apply(key, token);
+    return { token, supported: true };
+  } catch (error) {
+    const missingApi = error instanceof RelayError && error.kind === 'not-found';
+    if (!missingApi) throw error;
+    cache?.markUnsupported(key);
+    return { token: null, supported: false };
+  }
+}
+
 /** 读取当前状态：模型目录是必需的，分组信息是可选能力。
  *
  * 第三方站点（new-api / sub2api 等）没有 /v1/token/group：
@@ -100,16 +162,13 @@ export async function readState(deps: RouteDeps, refresh = false): Promise<Plugi
     return state;
   }
 
-  // 1) 分组信息（可选）
+  // 1) 分组信息（可选）—— 走缓存，正常情况下不产生网络等待
   try {
-    state.token = await fetchTokenGroup(opts(deps));
-    state.supportsSwitch = true;
+    const group = await resolveTokenGroup(deps, refresh);
+    state.token = group.token;
+    state.supportsSwitch = group.supported;
   } catch (error) {
-    const missingApi = error instanceof RelayError && error.kind === 'not-found';
-    if (!missingApi) {
-      return applyError(state, error);
-    }
-    state.supportsSwitch = false;
+    return applyError(state, error);
   }
 
   // 2) 模型目录（必需）
@@ -179,6 +238,9 @@ export async function switchGroup(deps: RouteDeps, group: string): Promise<Route
   state.token = token;
   state.connected = true;
   state.supportsSwitch = true;
+  // 切组响应里已带最新分组信息，直接写进缓存：
+  // 否则紧接着打开面板会先看到旧分组（缓存还没过期），白转一圈。
+  deps.groupCache?.apply(deps.baseURL, token);
 
   let warning: string | undefined;
   try {

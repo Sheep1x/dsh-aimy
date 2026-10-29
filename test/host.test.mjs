@@ -12,9 +12,11 @@ const KEY = 'sk-test-key';
  *
  * `capacityModels` 可把某些模型改成「站点声明了容量」的形状，
  * 用来验证 /v1/models 里带 context_length / max_output_tokens 时会被采纳。
+ * 运行中可用 `setCapacity()` 改声明，用来验证容量变化会触发重写。
  */
 function makeRelay({ supportsSwitch, capacityModels = {} }) {
   const state = { group: 'default', log: [] };
+  const capacity = { ...capacityModels };
   const groups = [
     { symbol: 'default', name: '默认', ratio: 1, public: true },
     { symbol: 'vip', name: 'VIP', ratio: 0.5, public: true },
@@ -73,10 +75,10 @@ function makeRelay({ supportsSwitch, capacityModels = {} }) {
     if (url.pathname === '/v1/models') {
       const list = modelsByGroup[state.group] ?? [];
       res.writeHead(200, { 'Content-Type': 'application/json' });
-      // capacityModels 里的 id 额外带上站点声明的容量字段（new-api / sub2api 会这么返回）
+      // capacity 里的 id 额外带上站点声明的容量字段（new-api / sub2api 会这么返回）
       res.end(JSON.stringify({
         object: 'list',
-        data: list.map((id) => ({ id, object: 'model', ...(capacityModels[id] ?? {}) })),
+        data: list.map((id) => ({ id, object: 'model', ...(capacity[id] ?? {}) })),
       }));
       return;
     }
@@ -85,7 +87,14 @@ function makeRelay({ supportsSwitch, capacityModels = {} }) {
     res.end(JSON.stringify({ success: false, message: 'not found' }));
   });
 
-  return { server, state };
+  return {
+    server,
+    state,
+    /** 运行中改某模型的容量声明，验证指纹与重写。 */
+    setCapacity(id, fields) {
+      capacity[id] = fields;
+    },
+  };
 }
 
 /** 假凭据服务：内存 Map，行为对齐 dsh-credentials 的 describe/resolve/set/unset。 */
@@ -913,6 +922,124 @@ describe('写进现有 pi-ai 配置（首选路径）', () => {
         '清除兼容模式时应摘掉 settings 里的 provider',
       );
     } finally {
+      rmSync(dshHome, { recursive: true, force: true });
+    }
+  });
+
+  /**
+   * 面板加载快不快，主要就看这条：`/state` 每次都会走 syncProvider，
+   * 若无条件改 settings，就要序列化 + 落盘 profile 配置 + 让 pi-ai 重校验整条路由。
+   * 实测这一个动作在真实宿主里吃掉 2–3 秒，比网络那 500ms 大一个量级。
+   */
+  it('切组只写一次 settings，且旧分组的模型不残留', async () => {
+    const dshHome = mkdtempSync(join(tmpdir(), 'dsh-aimy-switch-once-'));
+    const relay = makeRelay({ supportsSwitch: true });
+    await new Promise((r) => relay.server.listen(0, '127.0.0.1', r));
+    const baseURL = 'http://127.0.0.1:' + relay.server.address().port;
+
+    const settings = makeSettings();
+    const llm = { listProviders: () => [{ id: 'onehub' }], listModels: async () => [{ id: 'model-a' }] };
+    try {
+      const plugin = await startPlugin(baseURL, dshHome, { settings, llm });
+      await json(plugin.base + '/refresh', { method: 'POST' }); // default: model-a, model-b
+      const writtenBefore = settings.written.length;
+      const removedBefore = settings.removed.length;
+
+      const { body } = await json(plugin.base + '/switch', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ group: 'vip' }),
+      });
+      await new Promise((r) => plugin.server.close(r));
+
+      assert.equal(body.data.state.token.group, 'vip');
+
+      // 不再「先 unset 再 write」：多一次 settings 写入要白花 1–1.5 秒，
+      // 而且中间那一刻路由是消失的。
+      assert.equal(
+        settings.removed.length,
+        removedBefore,
+        '切组不该再从 settings 里 unset provider（数组会被整体替换，不需要先删）',
+      );
+      assert.equal(
+        settings.written.length,
+        writtenBefore + 1,
+        '切组应恰好写一次 settings，实际写了 ' + (settings.written.length - writtenBefore) + ' 次',
+      );
+
+      // 关键：旧分组的 model-a 不能残留（验证数组确实是整体替换）
+      const last = settings.written.filter((w) => w.patch?.providers?.onehub).pop();
+      assert.deepEqual(
+        last.patch.providers.onehub.models.map((m) => m.id),
+        ['model-b', 'model-c'],
+        '切到 vip 后目录应是 model-b/model-c，旧模型不得残留',
+      );
+    } finally {
+      await new Promise((r) => relay.server.close(r));
+      rmSync(dshHome, { recursive: true, force: true });
+    }
+  });
+
+  it('配置没变时不重复写 settings（重复打开面板必须走短路）', async () => {
+    const dshHome = mkdtempSync(join(tmpdir(), 'dsh-aimy-no-rewrite-'));
+    const relay = makeRelay({ supportsSwitch: true });
+    await new Promise((r) => relay.server.listen(0, '127.0.0.1', r));
+    const baseURL = 'http://127.0.0.1:' + relay.server.address().port;
+
+    const settings = makeSettings();
+    const llm = { listProviders: () => [{ id: 'onehub' }], listModels: async () => [{ id: 'model-a' }] };
+    try {
+      const plugin = await startPlugin(baseURL, dshHome, { settings, llm });
+
+      await json(plugin.base + '/refresh', { method: 'POST' });
+      const afterFirst = settings.written.length;
+      assert.ok(afterFirst > 0, '首次必须写入 settings');
+
+      // 再打开三次面板：内容没变，一次都不该重写
+      await json(plugin.base + '/state');
+      await json(plugin.base + '/state');
+      await json(plugin.base + '/state');
+      await new Promise((r) => plugin.server.close(r));
+
+      assert.equal(
+        settings.written.length,
+        afterFirst,
+        '配置未变却重写了 settings —— 面板每次打开都要为此付 2–3 秒',
+      );
+    } finally {
+      await new Promise((r) => relay.server.close(r));
+      rmSync(dshHome, { recursive: true, force: true });
+    }
+  });
+
+  it('站点改了容量声明时必须重写 settings（否则选择器停在旧值）', async () => {
+    const dshHome = mkdtempSync(join(tmpdir(), 'dsh-aimy-cap-rewrite-'));
+    const relay = makeRelay({ supportsSwitch: true });
+    await new Promise((r) => relay.server.listen(0, '127.0.0.1', r));
+    const baseURL = 'http://127.0.0.1:' + relay.server.address().port;
+
+    const settings = makeSettings();
+    const llm = { listProviders: () => [{ id: 'onehub' }], listModels: async () => [{ id: 'model-a' }] };
+    try {
+      const plugin = await startPlugin(baseURL, dshHome, { settings, llm });
+      await json(plugin.base + '/refresh', { method: 'POST' });
+      const afterFirst = settings.written.length;
+
+      // 站点改了声明：容量进了指纹，必须重写
+      relay.setCapacity('model-a', { context_length: 200000, max_output_tokens: 64000 });
+      await json(plugin.base + '/refresh', { method: 'POST' });
+      await new Promise((r) => plugin.server.close(r));
+
+      assert.ok(
+        settings.written.length > afterFirst,
+        '站点改了容量声明却没重写 settings，模型选择器会一直显示旧值',
+      );
+      const last = settings.written.filter((w) => w.patch?.providers?.onehub).pop();
+      const modelA = last.patch.providers.onehub.models.find((m) => m.id === 'model-a');
+      assert.equal(modelA.contextWindow, 200000, '新声明的上下文要落到挂载配置里');
+      assert.equal(modelA.maxTokens, 64000, '新声明的输出上限要落到挂载配置里');
+    } finally {
+      await new Promise((r) => relay.server.close(r));
       rmSync(dshHome, { recursive: true, force: true });
     }
   });

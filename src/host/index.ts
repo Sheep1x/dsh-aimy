@@ -401,6 +401,33 @@ export function apply(ctx: any, config?: Config): void {
   /** 目录变化 → 首次挂载 / 重挂载该档案的模型路由。失败只记录。 */
   /** 每个档案最近一次成功同步的模型集合，供 remountProvider 判断是否真的需要重挂。 */
   const lastSyncedModels = new Map<string, RelayModel[]>();
+  /**
+   * 每个档案「上一次成功写进 settings 的 provider 配置」指纹。
+   *
+   * 面板每次打开都会走 syncProvider。如果无条件重写，settings.update 要序列化、
+   * 落盘 profile 配置，还要让 pi-ai 把整条路由重新校验一遍——实测这一个动作
+   * 就吃掉 2–3 秒，是面板慢的真正主因（比网络那 500ms 大一个量级）。
+   * 内容没变就什么都不做；顺带好处是用户在模型页手动改过的配置不会被每次覆盖。
+   */
+  const writtenProviders = new Map<string, string>();
+  /** 已写过的默认思考档位，避免每次打开面板都重写一遍 agent-default-model。 */
+  const writtenEfforts = new Map<string, string>();
+
+  /** provider 配置指纹：只有这些内容变化时才值得重写。 */
+  const providerFingerprint = (profile: ProfileConfig, models: RelayModel[]): string =>
+    JSON.stringify({
+      settingsNs: readConfig(config).settingsNs ?? DEFAULT_SETTINGS_NS,
+      routeName: profile.routeName,
+      displayName: profile.displayName,
+      baseURL: normalizeBaseURLForApi(profile.baseURL, profile.api),
+      apiKeyRef: profile.apiKeyRef,
+      api: profile.api,
+      defaultContextWindow: profile.defaultContextWindow,
+      defaultMaxTokens: profile.defaultMaxTokens,
+      imageInput: profile.imageInput,
+      // 容量也算进指纹：官方表刷新或站点改声明后要能重写
+      models: models.map((m) => [m.id, m.name, m.contextWindow, m.maxTokens]),
+    });
 
   const syncProvider = async (profile: ProfileConfig, incoming: RelayModel[]): Promise<{ ok: boolean; error?: string }> => {
     // 幂等：已定稿的目录原样通过，未定稿的在这里补算容量。
@@ -413,6 +440,13 @@ export function apply(ctx: any, config?: Config): void {
       return { ok: false, error: '当前分组没有可用模型，未挂载模型路由' };
     }
     const cfg = readConfig(config);
+
+    // 配置没变就不重写：这是面板加载快不快的关键（见 writtenProviders 注释）。
+    // 有挂载错误时不走这条短路，让用户点「刷新」能真正重试一次。
+    const fingerprint = providerFingerprint(profile, models);
+    if (!mountErrors.has(profile.id) && writtenProviders.get(profile.id) === fingerprint) {
+      return { ok: true };
+    }
 
     // 首选：写进现有 pi-ai 条目的配置（避免重复注册内置 provider 目录）
     const viaSettings = await writeProviderViaSettings(ctx, {
@@ -434,16 +468,20 @@ export function apply(ctx: any, config?: Config): void {
       settingsRoutes.set(profile.id, { routeName: profile.routeName, modelCount: models.length });
       // 档位可选 ≠ 档位已选。模型声明 reasoningEfforts 只是提供选项，
       // 实际下发什么由 agent-default-model 决定，默认设 High。
-      await setDefaultReasoningEffort(ctx, {
-        settingsNs: cfg.settingsNs ?? DEFAULT_SETTINGS_NS,
-        routeName: profile.routeName,
-      });
+      await setDefaultReasoningEffort(
+        ctx,
+        { settingsNs: cfg.settingsNs ?? DEFAULT_SETTINGS_NS, routeName: profile.routeName },
+        undefined,
+        writtenEfforts,
+      );
       if (check.present === false) {
         const message = '已写入 ' + viaSettings.ns + ' 的 providers，但模型路由仍未出现在 llm 中';
         mountErrors.set(profile.id, message);
         return { ok: false, error: message };
       }
       mountErrors.delete(profile.id);
+      // 只有确认挂上了才记指纹：写失败/路由没出现时下次还得重试
+      writtenProviders.set(profile.id, fingerprint);
       return { ok: true };
     }
 
@@ -514,11 +552,18 @@ export function apply(ctx: any, config?: Config): void {
     if (previous && sameModels(previous, models)) {
       return syncProvider(profile, models);
     }
-    // 集合变了：先删 settings 里的旧 provider，避免旧模型残留在目录里
-    await removeProviderViaSettings(ctx, {
-      settingsNs: readConfig(config).settingsNs ?? DEFAULT_SETTINGS_NS,
-      routeName: profile.routeName,
-    });
+    // 集合变了：直接整份覆盖写回，**不需要先删**。
+    //
+    // 依据：settings 的 mergeLayers 对数组是整体替换
+    // （`if (!isPlainObject(under) || !isPlainObject(over)) return over`，
+    // 数组不是 plain object），而 provider 配置里的 `models` 正是数组，
+    // 所以写回去就是新目录，不会残留旧模型。
+    //
+    // 早先那一次「先 unset 再 write」是白花一次 settings 写入（实测 1–1.5 秒：
+    // 每次 update/mutate 都要序列化、落盘、再让 pi-ai 重校验整条路由），
+    // 而且中间那一刻路由是消失的。切组本来就要等两次网络往返，
+    // 没必要再搭上一次多余的磁盘写。
+    writtenProviders.delete(profile.id);
     const existing = mounts.get(profile.id);
     if (existing) {
       try { await existing.dispose(); } catch {}

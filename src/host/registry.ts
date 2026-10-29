@@ -123,12 +123,19 @@ export async function writeProviderViaSettings(
  *
  * 只在当前默认选择确实指向本插件路由时才写，避免抢别的 provider 的设置。
  *
+ * **写入代价很高**：settings.update 会序列化并落盘 profile 配置，还会让 pi-ai
+ * 重新校验整条路由。面板每次打开都会走到这里，无条件重写实测吃掉 2–3 秒。
+ * 所以记住上次写过的值，相同的就不再写——顺带的好处是用户在模型页手动改过
+ * 档位后，我们不会每次打开面板都把它改回 high。
+ *
  * @returns 写入结果；不需要写或写不进去时返回 false
  */
 export async function setDefaultReasoningEffort(
   ctx: any,
   target: Pick<RegistryTarget, 'settingsNs' | 'routeName'>,
   effort: string = DEFAULT_REASONING_EFFORT,
+  /** 上次已写入的值（调用方持有，插件生命周期内有效）。 */
+  written?: Map<string, string>,
 ): Promise<boolean> {
   const settings = settingsWriter(ctx);
   if (!settings || typeof settings.update !== 'function') return false;
@@ -142,9 +149,12 @@ export async function setDefaultReasoningEffort(
     return false;
   }
 
+  if (written?.get(target.routeName) === effort) return false;
+
   try {
     // agent-default-model 是独立的 profile 条目，ns 就是它的插件 id
     await settings.update(DEFAULT_MODEL_NS, { reasoningEffort: effort });
+    written?.set(target.routeName, effort);
     return true;
   } catch {
     return false;

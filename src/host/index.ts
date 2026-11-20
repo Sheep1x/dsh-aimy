@@ -31,8 +31,11 @@ import { FALLBACK_CONTEXT_WINDOW, FALLBACK_MAX_TOKENS, resolveModels } from './c
 import { removeProviderViaSettings, setDefaultReasoningEffort, writeProviderViaSettings } from './registry';
 import { CatalogStore, GroupCache } from './state';
 import { bindPetBalance } from './balance';
+import { BalanceCache, cacheKeyFor, readBalanceView, type BalanceTemplate, type CachedBalance } from './balance-view';
+import { apiRoot } from './relay';
 import { describeError, readState, switchGroup, type RouteDeps } from './routes';
-import type { RelayModel } from '../shared/types';
+import { DEFAULT_BALANCE_REFRESH_SECONDS } from '../shared/types';
+import type { BalanceResponse, RelayModel } from '../shared/types';
 
 // 供测试与调试：从适配器模块里挑出可挂载的 cordis 插件
 export { pickPlugin } from './provider';
@@ -48,6 +51,18 @@ export {
 } from './capacity';
 // 分组缓存：单测直接验证 TTL / stale-while-revalidate / 去重策略
 export { GroupCache, GROUP_CACHE_TTL_MS } from './state';
+
+// 底部余额条：模板取值（path / script）、缓存策略、读数换算
+export {
+  BALANCE_CACHE_TTL_MS,
+  BalanceCache,
+  cacheKeyFor,
+  extractAmount,
+  readBalanceView,
+  readPath,
+  viewFromReading,
+} from './balance-view';
+export type { BalanceTemplate } from './balance-view';
 
 // 余额桥：给 dsh-pet 登记 `onehub` / `onehub-compat` 两条路由的余额查询。
 // 纯函数一并导出，单测直接喂真实报文断言（探测链 + 三种 wire 形状）。
@@ -97,6 +112,22 @@ export interface Config {
    * 有这条时把 provider 写进它的配置（推荐），而不是自己再挂一个 pi-ai 实例。
    */
   settingsNs?: string;
+  /**
+   * 底部余额条（`shell.bottom` 插槽）。
+   *
+   * `template` 是给「内置三档探测链认不出」的站点用的自定义查询模板，
+   * 与 CCswitch 的用量查询模板同构（url/method/headers + path/script 取值）。
+   */
+  balanceBar?: BalanceBarConfig;
+}
+
+export interface BalanceBarConfig {
+  /** 关掉就整条不渲染（默认开） */
+  enabled?: boolean;
+  /** 轮询间隔，默认 300 秒 */
+  refreshSeconds?: number;
+  /** 自定义查询模板；null = 只用内置探测链 */
+  template?: BalanceTemplate | null;
 }
 
 const DEFAULT_KEY_REF = 'ONEHUB_API_KEY';
@@ -118,6 +149,13 @@ const DEFAULT_MAX_TOKENS = FALLBACK_MAX_TOKENS;
  */
 function readConfig(config?: Config): Config {
   return { ...(config ?? {}) };
+}
+
+/** 轮询间隔：默认 5 分钟；下限 30 秒（再快就是拿站点当探针了），上限一天。 */
+export function normalizeRefreshSeconds(value: unknown): number {
+  const n = Number(value);
+  if (!Number.isFinite(n) || n <= 0) return DEFAULT_BALANCE_REFRESH_SECONDS;
+  return Math.max(30, Math.min(86_400, Math.round(n)));
 }
 
 /* ------------------------------ 凭据 / 选择 ------------------------------ */
@@ -341,6 +379,14 @@ export function apply(ctx: any, config?: Config): void {
   const groupCache = new GroupCache();
   const settings = new ProfileSettingsStore();
   settings.load();
+  /**
+   * 底部余额条缓存。
+   *
+   * 余额条是**常驻**的（`shell.bottom` 全窗口底部），每次切页/切 Tab 都会重新挂载，
+   * 而余额查询要打第三方站点（实测 40–400ms，偶发数秒）。没有缓存的话，
+   * 切一次页面就白等一次 —— 与当初 `/v1/token/group` 的问题是同一类。
+   */
+  const balanceCache = new BalanceCache();
 
   const mounts = new Map<ProfileId, ProviderMount>();
   /** 通过 settings 写进宿主 pi-ai 的路由（本插件不持有 fiber）。 */
@@ -592,6 +638,91 @@ export function apply(ctx: any, config?: Config): void {
     };
   };
 
+  /** 余额条要查哪个档案：跟着「当前默认模型」走，认不出来就用预设。 */
+  const balanceProfileFor = (requested?: ProfileId): ProfileConfig => {
+    if (requested) return resolve(requested);
+    try {
+      const selection = readSelection(ctx);
+      const compat = resolve('compat');
+      // 用户把默认模型切到了兼容模式那条路由上，底部条就该显示那个站的余额
+      if (compat.baseURL && selection && selection.provider === compat.routeName) return compat;
+    } catch {
+      // 读不到选择：退回预设
+    }
+    return resolve('aimy');
+  };
+
+  const balanceTemplateFor = (): BalanceTemplate | null => {
+    const template = readConfig(config).balanceBar?.template;
+    return template && typeof template === 'object' ? template : null;
+  };
+
+  /**
+   * 取一次余额（带缓存）。
+   *
+   * 三条路径：新鲜缓存 → 直接给；过期缓存 → 先给旧值 + 后台刷新；都没有 → 同步等一次。
+   * 失败时**保留上次成功的读数**，只把错误挂上去 —— 底部条显示一个旧数字，
+   * 比突然变成「余额不可用」更不容易让人以为插件挂了。
+   */
+  const readBalance = async (profile: ProfileConfig, refresh: boolean): Promise<BalanceResponse> => {
+    const bar = readConfig(config).balanceBar;
+    const base = {
+      profile: profile.id,
+      displayName: profile.displayName,
+      refreshSeconds: normalizeRefreshSeconds(bar?.refreshSeconds),
+    };
+    if (bar?.enabled === false) {
+      return { ok: false, view: null, disabled: true, ...base };
+    }
+    if (!profile.baseURL) return { ok: false, view: null, error: '该档案还没有配置地址', ...base };
+
+    const template = balanceTemplateFor();
+    const cacheKey = cacheKeyFor(profile.baseURL, template);
+
+    const load = async (): Promise<CachedBalance | undefined> => {
+      if (!balanceCache.beginRefresh(cacheKey)) return balanceCache.peek(cacheKey);
+      try {
+        const inline = profile.preset ? readConfig(config).apiKey : undefined;
+        const apiKey = await resolveApiKey(ctx, profile.apiKeyRef, inline);
+        if (!apiKey) {
+          balanceCache.fail(cacheKey, '缺少凭证 ' + profile.apiKeyRef);
+        } else {
+          const result = await readBalanceView(apiRoot(profile.baseURL), apiKey, fetch, template);
+          if (result.ok) balanceCache.set(cacheKey, result.view);
+          else balanceCache.fail(cacheKey, result.error);
+        }
+      } catch (error) {
+        balanceCache.fail(cacheKey, describeError(error));
+      } finally {
+        balanceCache.endRefresh(cacheKey);
+      }
+      return balanceCache.peek(cacheKey);
+    };
+
+    const respond = (entry: CachedBalance | undefined, stale = false): BalanceResponse => {
+      if (!entry) return { ok: false, view: null, error: '余额查询没有返回结果', ...base };
+      return {
+        ok: entry.view !== null,
+        view: entry.view,
+        ...(entry.error ? { error: entry.error } : {}),
+        ...(stale ? { stale: true } : {}),
+        ...base,
+      };
+    };
+
+    if (!refresh) {
+      const fresh = balanceCache.fresh(cacheKey);
+      if (fresh) return respond(fresh);
+      const cached = balanceCache.peek(cacheKey);
+      if (cached) {
+        // stale-while-revalidate：先给旧数字，后台补一次（下一次轮询就能拿到新值）
+        void load();
+        return respond(cached, true);
+      }
+    }
+    return respond(await load());
+  };
+
   /** 取某档案的状态：地址缺失时返回「待配置」空状态，绝不发网络请求。 */
   const stateFor = async (profile: ProfileConfig, refresh = false) => {
     if (!profile.baseURL) {
@@ -737,6 +868,15 @@ export function apply(ctx: any, config?: Config): void {
                 readConfig(config).settingsNs ?? DEFAULT_SETTINGS_NS,
               );
               sendJson(res, 200, { success: true, data: report });
+              return;
+            }
+
+            // 底部余额条：`?profile=` 不传时跟着当前默认模型走（见 balanceProfileFor）
+            if (method === 'GET' && route === '/balance') {
+              const explicit = url.searchParams.get('profile');
+              const target = balanceProfileFor(isProfileId(explicit) ? explicit : undefined);
+              const refresh = url.searchParams.get('refresh') === '1';
+              sendJson(res, 200, { success: true, data: await readBalance(target, refresh) });
               return;
             }
 

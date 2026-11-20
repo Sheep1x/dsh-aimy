@@ -11,6 +11,7 @@ DSH（DeepSeek Harness）插件 **dsh-Aimy**：解决中转站多分组多倍率
 | 入口 | 插槽 | 说明 |
 |---|---|---|
 | 首页左侧栏图标 + 主区面板「**Aimy-艾米**」 | `sidebar.panellist`（order 30）+ `main`（key `dsh-aimy`） | 整页面板，撑满主区、自带滚动 |
+| 输入框下方统计栏右侧的余额 | `conversation.composer.dock`（id `dsh-aimy-balance`，order 10） | 胶囊 `$93.45`，tooltip 含站名/额度/剩余百分比，点击立即刷新 |
 
 - 面板 id、`main` 的 key、包名一致，都是 `dsh-aimy`；sidebar 点图标时把 `activePanelId` 设成该 id，`main` 据此命中。
 - 两处注册都在 `src/client/app.ts` 的 `apply()` 里，`inject = ['slots']`。
@@ -168,6 +169,10 @@ pnpm add file:D:/openwork/one-hub/dsh-aimy
     apiKeyRef: ONEHUB_API_KEY           # 凭据引用名
     group: ''                            # 期望分组（空 = 跟随令牌）
     probeModels: false                   # 刷新目录后探测可达性（见下）
+    balanceBar:                          # 余额胶囊（见「余额胶囊」一节）
+      enabled: true
+      refreshSeconds: 300
+      template: null                     # 内置探测链认不出的站点才需要配
 ```
 
 ### 模型可达性探测（默认关闭）
@@ -242,6 +247,7 @@ host 半侧在 `/dsh-aimy-relay` 前缀下暴露（仅供本插件的浏览器�
 |---|---|---|
 | GET | `/state` | 当前分组、倍率、可选分组、模型目录（分组 5 分钟内直读缓存，模型目录命中缓存时不打网络） |
 | GET | `/diagnostics` | 排障用的注册表/凭据/设置通道自检；面板后台拉取，不参与 `/state` 渲染 |
+| GET | `/balance` | 余额胶囊读数：`?profile=aimy\|compat`（不传按当前默认模型选）、`?refresh=1` 绕过缓存 |
 | POST | `/refresh` | 强制重新拉取分组与模型目录 |
 | POST | `/switch` | `{ "group": "vip" }` 真实切组，随后刷新目录 |
 | POST | `/credentials` | `{ "apiKey": "sk-…" }` 写入凭据库并立即探测/挂载 |
@@ -282,6 +288,80 @@ host 半侧在 `/dsh-aimy-relay` 前缀下暴露（仅供本插件的浏览器�
 
 没装 dsh-pet 时这一段静默跳过，插件其余功能不受影响。
 
+## 余额胶囊
+
+输入框下方那一行统计栏（`143 tok/s · 缓存命中 96% · 7%`）的最右侧，多一颗余额胶囊：
+
+```text
+  ⌁ 143 tok/s    ⛁ 缓存命中 96%    ◔ 7%    ▭ Aimy余额：$93.45
+```
+
+胶囊正文是「站名余额：金额」（`Aimy-艾米` 取第一段 → `Aimy余额：$93.45`）；
+额度 / 剩余百分比 / 更新时间都在 hover 的 tooltip 里 —— 那一行跟原生统计项共排，
+撑宽了会把整行挤歪。
+
+点一下立即刷新（绕过缓存）；页面不可见（切到别的标签页）时不轮询。
+
+**放在哪**：`dsh-client-ui-chat` 注册的 `conversation.composer.dock`（`kind:'list'`，
+`scope:'session'`，`.dock{display:flex;align-items:center;justify-content:center;gap:12px}`）。
+该行已有 chat 自己的 `activity`（order 0，吞吐）与 `usage`（order 1，缓存命中），
+我们用 `order: 10` 排在它们右侧，样式照 `StatsPills.module.css` 的 `.pill`：
+`padding:1px 8px`、tertiary 文字色、字号比正文小 1px、`tabular-nums`、14px 图标。
+因为是 list 槽，其他插件也能往同一行加东西，不会互相顶掉；关掉开关时组件返回 `null`，
+那行不留空位。
+
+> 只在有会话的界面出现（dock 属于 session 作用域）。欢迎页（hero）上没有输入框统计栏，
+> 也就没有这颗胶囊。
+
+### 取值链
+
+与余额桥共用同一套探测逻辑，只是多了一层自定义模板：
+
+| 顺序 | 来源 | 说明 |
+|---|---|---|
+| ① | `balanceBar.template` | 你显式配的查询模板（见下）；配了就先试它 |
+| ② | `GET /v1/usage` | one-hub / sub2api |
+| ③ | `GET /v1/dashboard/billing/subscription` + `/usage` | one-hub / new-api |
+| ④ | `GET /api/usage/token/` | new-api |
+
+模板失败会回落到 ②③④；全失败就把每一层的原因都显示出来（hover 看 title），
+**不伪造 0 余额**。查询失败时如果有上一次成功的读数，底部条继续显示旧数字并标注「（旧值）」。
+
+### 自定义查询模板
+
+给「内置三档都认不出」的站点用，与 CCswitch 的「用量查询通用模板」同构：
+
+```yaml
+balanceBar:
+  template:
+    url: /api/user/self            # 相对路径自动拼站点根；支持 {baseURL} 与 {apiKey} 占位
+    method: GET
+    headers: {}                    # 没写 Authorization 时自动补 Bearer；写了就以你的为准（头名大小写不敏感）
+    path: data.balance             # 取值方式一：点号路径（支持 a.b[0].c）
+    currency: USD
+```
+
+取值方式二（二选一，都写时 `script` 优先）—— 需要换算时用它：
+
+```yaml
+    script: |
+      return { balance: data.quota / 500000, currency: 'USD' };
+```
+
+`script` 的形参是 `(data, helpers)`，可用 `helpers.num(v)` 与 `helpers.pick(data, 'a.b')`；
+返回值可以是数字，或 `{ balance, currency }`（也认 `amount` / `remaining` 字段名）。
+
+`script` 用 `new Function` 执行：它只能看到 `data` 与两个纯函数，不注入 `fetch`/`require`，
+但**它和你本地的其它配置是同一信任级别**（CCswitch 的模板也是直接在页面里 eval），
+不要从不可信来源抄模板。
+
+### 刷新与缓存
+
+- 客户端：进页面拉一次，之后按 `refreshSeconds`（默认 300 秒）轮询；`document.hidden` 时跳过，切回来补一次。
+- 宿主：60 秒缓存（`BALANCE_CACHE_TTL_MS`），过期后 **stale-while-revalidate** —— 先给旧值、后台补新的。
+  多个标签页 / 反复切面板不会把站点当探针打。
+- 关掉整条：`balanceBar.enabled: false`（组件返回 `null`，不留空白行）。
+
 ## 测试
 
 ```bash
@@ -293,8 +373,9 @@ host 半侧在 `/dsh-aimy-relay` 前缀下暴露（仅供本插件的浏览器�
 - `test/capacity.test.mjs`：容量取值链（站点声明 → 官方目录 → 兜底）、压缩 headroom 夹取、幂等
 - `test/group-cache.test.mjs`：分组缓存（TTL / stale-while-revalidate / 刷新去重 / 404 记住 / 抖动不缓存）
 - `test/balance.test.mjs`：余额桥（三站真实报文形状 + 探测链 + 三种 wire 形状 + 注册幂等）
+- `test/balance-view.test.mjs`：底部条的读数层（模板 path/script 取值、模板优先与回落、密钥打码、缓存保留旧值）
 - `test/client.test.mjs`：client 半侧（走 `window.__ModuleLoader__` 契约，假 hooks 渲染真 React 元素树）
-  - 三条注册齐全、侧栏 id 必须等于 `main` 的 key
+  - 三处注册齐全、侧栏 id 必须等于 `main` 的 key
   - 侧栏图标是 svg 且跟随 `size`/`active`
   - 面板展示默认地址并标注「预设地址（不可修改）」
   - 点地址 → 写剪贴板 → 提示「已复制」
@@ -318,10 +399,12 @@ src/
   host/capacity.ts    逐模型容量解析（站点声明 → 官方目录 → 兜底，含压缩 headroom 夹取）
   host/state.ts       模型目录缓存（state.json）+ 分组信息缓存（内存，TTL 5 分钟）
   host/routes.ts      /dsh-aimy-relay/* 的纯函数编排
+  host/balance-view.ts  余额读数：自定义模板 + 内置探测链 + 缓存（底部条用）
   host/index.ts       Cordis 插件入口（name / inject / apply）
   client/index.ts     __ModuleLoader__ 外壳
   client/app.ts       装配层：注册 sidebar.panellist + main
   client/section.ts   「中转站」设置分区 UI
+  client/balance-bar.ts  余额胶囊（注册进 conversation.composer.dock）
 ```
 
 ## 协议（三种，与 pi-ai 的 supportedProtocols() 一致）

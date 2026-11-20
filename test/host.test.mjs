@@ -14,8 +14,8 @@ const KEY = 'sk-test-key';
  * 用来验证 /v1/models 里带 context_length / max_output_tokens 时会被采纳。
  * 运行中可用 `setCapacity()` 改声明，用来验证容量变化会触发重写。
  */
-function makeRelay({ supportsSwitch, capacityModels = {} }) {
-  const state = { group: 'default', log: [] };
+function makeRelay({ supportsSwitch, capacityModels = {}, usage = false, custom = false }) {
+  const state = { group: 'default', log: [], usageHits: 0, customHits: 0 };
   const capacity = { ...capacityModels };
   const groups = [
     { symbol: 'default', name: '默认', ratio: 1, public: true },
@@ -80,6 +80,23 @@ function makeRelay({ supportsSwitch, capacityModels = {} }) {
         object: 'list',
         data: list.map((id) => ({ id, object: 'model', ...(capacity[id] ?? {}) })),
       }));
+      return;
+    }
+
+    // 余额：one-hub 形态（remaining 直接是金额）。默认关掉 ——
+    // 「余额桥」那条用例需要「站点什么余额接口都没有」的形态。
+    if (usage && url.pathname === '/v1/usage') {
+      state.usageHits += 1;
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ is_active: true, remaining: 93.787276, unit: 'USD' }));
+      return;
+    }
+
+    // 余额：给自定义模板用的非标准接口
+    if (custom && url.pathname === '/custom/balance') {
+      state.customHits += 1;
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ data: { credit: 77.5 } }));
       return;
     }
 
@@ -1824,6 +1841,139 @@ describe('容量声明：站点字段 → 官方目录 → 兜底', () => {
     } finally {
       await new Promise((r) => relay.server.close(r));
       rmSync(dshHome, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('底部余额条（GET /balance）', () => {
+  /** 起一套独立的 relay + 插件：余额缓存是实例级的，混用会互相污染。 */
+  async function setup(config = {}) {
+    const dshHome = mkdtempSync(join(tmpdir(), 'dsh-aimy-bal-'));
+    const relay = makeRelay({ supportsSwitch: true, usage: true, custom: true });
+    await new Promise((r) => relay.server.listen(0, '127.0.0.1', r));
+    const plugin = await startPlugin('http://127.0.0.1:' + relay.server.address().port, dshHome, { config });
+    return {
+      relay,
+      plugin,
+      async close() {
+        await new Promise((r) => plugin.server.close(r));
+        await new Promise((r) => relay.server.close(r));
+        rmSync(dshHome, { recursive: true, force: true });
+      },
+    };
+  }
+
+  it('返回金额、额度、已用百分比与来源', async () => {
+    const env = await setup();
+    try {
+      const { status, body } = await json(env.plugin.base + '/balance');
+      assert.equal(status, 200);
+      assert.equal(body.data.ok, true);
+      assert.equal(body.data.profile, 'aimy');
+      assert.equal(body.data.displayName, 'Aimy-艾米');
+      assert.equal(body.data.view.amount, 93.787276);
+      assert.equal(body.data.view.currency, 'USD');
+      assert.equal(body.data.view.source, 'usage');
+      assert.ok(body.data.view.fetchedAt, '要带读数时间');
+      // 站点只给了 remaining，没有额度 → 不该编百分比
+      assert.equal(body.data.view.usedPercent, undefined);
+      assert.equal(body.data.refreshSeconds, 300, '默认 5 分钟轮询');
+    } finally {
+      await env.close();
+    }
+  });
+
+  it('缓存：连续请求只打一次站点，refresh=1 才真的重查', async () => {
+    const env = await setup();
+    try {
+      await json(env.plugin.base + '/balance');
+      await json(env.plugin.base + '/balance');
+      await json(env.plugin.base + '/balance');
+      assert.equal(env.relay.state.usageHits, 1, '60 秒内应复用缓存');
+
+      await json(env.plugin.base + '/balance?refresh=1');
+      assert.equal(env.relay.state.usageHits, 2, 'refresh=1 必须重新查');
+    } finally {
+      await env.close();
+    }
+  });
+
+  it('关掉开关时返回 disabled，客户端据此整条不渲染', async () => {
+    const env = await setup({ balanceBar: { enabled: false } });
+    try {
+      const { body } = await json(env.plugin.base + '/balance');
+      assert.equal(body.data.disabled, true);
+      assert.equal(body.data.view, null);
+      assert.equal(env.relay.state.usageHits, 0, '关掉后不该再打站点');
+    } finally {
+      await env.close();
+    }
+  });
+
+  it('自定义模板优先：配了模板就只走模板接口', async () => {
+    const env = await setup({
+      balanceBar: { template: { url: '/custom/balance', path: 'data.credit', currency: 'USD' } },
+    });
+    try {
+      const { body } = await json(env.plugin.base + '/balance');
+      assert.equal(body.data.ok, true);
+      assert.equal(body.data.view.amount, 77.5);
+      assert.equal(body.data.view.currency, 'USD');
+      assert.equal(body.data.view.source, 'template');
+      assert.equal(env.relay.state.customHits, 1);
+      assert.equal(env.relay.state.usageHits, 0, '模板成功时不该碰内置探测链');
+    } finally {
+      await env.close();
+    }
+  });
+
+  it('模板失败时回落内置链，仍然给出读数', async () => {
+    const env = await setup({
+      balanceBar: { template: { url: '/nope/balance', path: 'data.credit' } },
+    });
+    try {
+      const { body } = await json(env.plugin.base + '/balance');
+      assert.equal(body.data.ok, true);
+      assert.equal(body.data.view.amount, 93.787276, '应回落到 /v1/usage');
+      assert.equal(body.data.view.source, 'usage');
+    } finally {
+      await env.close();
+    }
+  });
+
+  it('查询失败时给出原因而不是 500', async () => {
+    const dshHome = mkdtempSync(join(tmpdir(), 'dsh-aimy-bal-fail-'));
+    // 一个什么都不给的站点：三档探测链全 404
+    const relay = makeRelay({ supportsSwitch: true });
+    relay.server.removeAllListeners('request');
+    relay.server.on('request', (req, res) => {
+      res.writeHead(404, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ success: false, message: 'not found' }));
+    });
+    await new Promise((r) => relay.server.listen(0, '127.0.0.1', r));
+    try {
+      const plugin = await startPlugin('http://127.0.0.1:' + relay.server.address().port, dshHome);
+      const { status, body } = await json(plugin.base + '/balance');
+      assert.equal(status, 200, '查询失败不该变成 500');
+      assert.equal(body.data.ok, false);
+      assert.equal(body.data.view, null);
+      assert.match(body.data.error, /未提供可用的余额接口/);
+      await new Promise((r) => plugin.server.close(r));
+    } finally {
+      await new Promise((r) => relay.server.close(r));
+      rmSync(dshHome, { recursive: true, force: true });
+    }
+  });
+
+  it('profile=compat 且没配地址时明确说缺地址', async () => {
+    const env = await setup();
+    try {
+      const { body } = await json(env.plugin.base + '/balance?profile=compat');
+      assert.equal(body.data.profile, 'compat');
+      assert.equal(body.data.ok, false);
+      assert.match(body.data.error, /还没有配置地址/);
+    } finally {
+      await env.close();
     }
   });
 });

@@ -53,24 +53,64 @@ const RETRIES = 1;
 
 /* ------------------------------- HTTP ------------------------------- */
 
+/** 一次请求的附加选项（自定义模板要用到非 GET、额外头与请求体）。 */
+export interface RequestOptions {
+  method?: string;
+  headers?: Record<string, string>;
+  body?: string;
+  /** 重试次数，默认 RETRIES；模板查询用 0，失败要立刻回落内置链 */
+  retries?: number;
+}
+
 async function requestJson(
   url: string,
   key: string,
   doFetch: typeof fetch,
 ): Promise<{ body: unknown; status: number }> {
+  return requestJsonWith(url, key, doFetch, {});
+}
+
+/**
+ * 带选项的 JSON 请求。
+ *
+ * 默认头与 `requestJson` 完全一致；`options.headers` 放在最后展开，
+ * 所以模板里写了 `Authorization` 就以模板为准（有的站用 `x-api-key`）。
+ */
+export async function requestJsonWith(
+  url: string,
+  key: string,
+  doFetch: typeof fetch,
+  options: RequestOptions = {},
+): Promise<{ body: unknown; status: number }> {
+  const method = (options.method ?? 'GET').toUpperCase();
+  const retries = Math.max(0, options.retries ?? RETRIES);
+  const defaults: Record<string, string> = {
+    Authorization: 'Bearer ' + key,
+    Accept: 'application/json',
+    'User-Agent': 'dsh-aimy-balance',
+    ...(options.body !== undefined ? { 'Content-Type': 'application/json' } : {}),
+  };
+  const overrides = options.headers ?? {};
+  // 头名大小写不敏感：模板写了 `authorization` 时不能再留一个默认 `Authorization`，
+  // 否则同一个头出现两份，fetch 取哪个由实现决定（Node 会拼成 "Bearer x, Token y"）。
+  const overridden = new Set(Object.keys(overrides).map((name) => name.toLowerCase()));
+  const headers: Record<string, string> = {};
+  for (const [name, value] of Object.entries(defaults)) {
+    if (!overridden.has(name.toLowerCase())) headers[name] = value;
+  }
+  Object.assign(headers, overrides);
+  const withBody = options.body !== undefined && method !== 'GET' && method !== 'HEAD';
   let last: unknown;
-  for (let attempt = 0; attempt <= RETRIES; attempt++) {
+  for (let attempt = 0; attempt <= retries; attempt++) {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
     try {
       const res = await doFetch(url, {
+        method,
         signal: controller.signal,
-        headers: {
-          Authorization: 'Bearer ' + key,
-          Accept: 'application/json',
-          'User-Agent': 'dsh-aimy-balance',
-        },
-      });
+        headers,
+        ...(withBody ? { body: options.body } : {}),
+      } as RequestInit);
       const text = await res.text();
       const body = text ? safeJson(text) : {};
       // 404/405 是「该站没有这个端点」：交给上层的探测链继续往下一档，不做重试
@@ -81,7 +121,7 @@ async function requestJson(
       return { body, status: res.status };
     } catch (error) {
       last = error;
-      if (attempt < RETRIES) await sleep(800);
+      if (attempt < retries) await sleep(800);
     } finally {
       clearTimeout(timer);
     }
@@ -110,7 +150,7 @@ function sleep(ms: number): Promise<void> {
 }
 
 /** `{success:false}` / `{code:false}` / `{error:{message}}` 三种软失败形态统一抛错。 */
-function assertNotSoftError(body: unknown, url: string): void {
+export function assertNotSoftError(body: unknown, url: string): void {
   if (!body || typeof body !== 'object') return;
   const record = body as Record<string, unknown>;
   if (record.success === false) {
@@ -165,13 +205,13 @@ function num(value: unknown, what: string): number {
 }
 
 /** 可选数值：缺省/空/非法 → undefined（可选字段用）。 */
-function optNum(value: unknown): number | undefined {
+export function optNum(value: unknown): number | undefined {
   if (value === undefined || value === null || value === '') return undefined;
   const n = Number(value);
   return Number.isFinite(n) ? n : undefined;
 }
 
-function asRecord(value: unknown): Record<string, unknown> | undefined {
+export function asRecord(value: unknown): Record<string, unknown> | undefined {
   return value !== null && typeof value === 'object' && !Array.isArray(value)
     ? (value as Record<string, unknown>)
     : undefined;
@@ -286,7 +326,7 @@ export function parseNewApiTokenUsage(body: unknown): { remaining: number; limit
 /* ------------------------------ 取数编排 ------------------------------ */
 
 /** 探测链的最后一档结果：直接给出「已用百分比 + 金额」这一层。 */
-interface QuotaReading {
+export interface QuotaReading {
   remaining: number;
   /** 总额；缺省 = 拿不到基准（气泡只剩金额，不播档位动画） */
   limit?: number;
@@ -294,6 +334,8 @@ interface QuotaReading {
   currency?: string;
   /** 订阅窗口（只有 sub2api 订阅模式有） */
   windows?: SubscriptionWindows;
+  /** 哪一档命中的（底部余额条要标来源，排障也靠它） */
+  source?: 'usage' | 'billing' | 'token';
 }
 
 /**
@@ -310,7 +352,7 @@ export async function readQuota(root: string, key: string, doFetch: typeof fetch
     const { body, status } = await requestJson(root + '/v1/usage', key, doFetch);
     if (status !== 404 && status !== 405) {
       const reading = readingFromUsageShape(parseUsageBody(body));
-      return await withLimitIfMissing(reading, root, key, doFetch);
+      return await withLimitIfMissing({ ...reading, source: 'usage' }, root, key, doFetch);
     }
     reasons.push('/v1/usage 不存在');
   } catch (error) {
@@ -323,7 +365,11 @@ export async function readQuota(root: string, key: string, doFetch: typeof fetch
     if (sub.status !== 404 && sub.status !== 405) {
       const usage = await requestJson(root + '/v1/dashboard/billing/usage', key, doFetch);
       const parsed = parseBillingPair(sub.body, usage.body);
-      return { remaining: parsed.remaining, ...(parsed.limit === undefined ? {} : { limit: parsed.limit }) };
+      return {
+        remaining: parsed.remaining,
+        ...(parsed.limit === undefined ? {} : { limit: parsed.limit }),
+        source: 'billing',
+      };
     }
     reasons.push('billing 接口不存在');
   } catch (error) {
@@ -335,7 +381,11 @@ export async function readQuota(root: string, key: string, doFetch: typeof fetch
     const { body, status } = await requestJson(root + '/api/usage/token/', key, doFetch);
     if (status !== 404 && status !== 405) {
       const parsed = parseNewApiTokenUsage(body);
-      return { remaining: parsed.remaining, ...(parsed.limit === undefined ? {} : { limit: parsed.limit }) };
+      return {
+        remaining: parsed.remaining,
+        ...(parsed.limit === undefined ? {} : { limit: parsed.limit }),
+        source: 'token',
+      };
     }
     reasons.push('/api/usage/token 不存在');
   } catch (error) {

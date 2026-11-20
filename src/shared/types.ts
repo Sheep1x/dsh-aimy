@@ -168,6 +168,46 @@ export function emptyState(baseURL: string, overrides: Partial<PluginState> = {}
  *
  * 放在 shared 而不是 client：这是纯判断，好单测，也避免把条件散落在 effect 里。
  */
+/* ------------------------------ 底部余额条 ------------------------------ */
+
+/**
+ * 一次余额读数。host 侧算好金额/额度/百分比，客户端只负责排版 ——
+ * 换算口径（剩余、总额、已用比例）留在能跑单测的那一侧。
+ */
+export interface BalanceView {
+  /** 剩余金额（站点自己的展示口径，不换算汇率） */
+  amount: number;
+  /** 币种；缺省 = 站点没明说，按 USD 渲染 */
+  currency?: string;
+  /** 总额；缺省 = 拿不到基准，只显示金额 */
+  limit?: number;
+  /** 已用百分比 0–100；缺省 = 没有基准 */
+  usedPercent?: number;
+  /** 哪一档取到的（排障用）：模板 / 内置三档 */
+  source: 'template' | 'usage' | 'billing' | 'token';
+  /** 读数的 ISO 时间 */
+  fetchedAt: string;
+}
+
+export interface BalanceResponse {
+  ok: boolean;
+  view: BalanceView | null;
+  /** 本次失败原因（可能同时带上一轮成功的 view） */
+  error?: string;
+  /** 配置里关掉了余额条：客户端整条不渲染 */
+  disabled?: boolean;
+  /** 这条读数来自缓存，后台正在刷新 */
+  stale?: boolean;
+  /** 读数归属的档案（宿主按当前默认模型选） */
+  profile?: ProfileId;
+  displayName?: string;
+  /** 轮询间隔（秒），由配置决定；客户端据此设定定时器 */
+  refreshSeconds?: number;
+}
+
+/** 余额条每分钟最多查一次；轮询间隔由配置决定。 */
+export const DEFAULT_BALANCE_REFRESH_SECONDS = 300;
+
 export function needsDiagnostics(state: PluginState | null): boolean {
   if (!state) return false; // 还没有状态：等 /state 回来再说
   if (state.error) return true;

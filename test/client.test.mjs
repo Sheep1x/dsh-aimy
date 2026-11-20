@@ -159,9 +159,10 @@ describe('dsh-aimy client', () => {
     return tree;
   };
 
-  it('只注册两处：侧栏图标 + 主区面板（不再注册设置页分区）', () => {
+  it('只注册三处：侧栏图标 + 主区面板 + 输入框下方余额胶囊（不再注册设置页分区）', () => {
     assert.ok(registry.entries.has('sidebar.panellist:dsh-aimy'), '缺侧栏图标');
     assert.ok(registry.entries.has('main:dsh-aimy'), '缺主区面板');
+    assert.ok(registry.entries.has('conversation.composer.dock:dsh-aimy-balance'), '缺余额胶囊');
     // 设置页分区已移除：宿主 nav 图标按 section id 硬编码，插件无法覆盖，
     // 留一行齿轮不如只保留侧栏入口。
     assert.equal(registry.entries.has('settings.section:onehub-relay'), false, '不应再注册设置页分区');
@@ -524,5 +525,121 @@ describe('dsh-aimy client', () => {
         assert.equal(module.needsDiagnostics({ ...healthy, ...patch }), true, label + ' 应触发诊断');
       });
     }
+  });
+  describe('余额胶囊（conversation.composer.dock）', () => {
+    const barEntry = () => registry.entries.get('conversation.composer.dock:dsh-aimy-balance');
+
+    /** 只在这一次调用里替换全局 fetch，跑完还原（别的用例还要用它拿 /state）。 */
+    const withFetch = async (handler, fn) => {
+      const previous = globalThis.fetch;
+      globalThis.fetch = handler;
+      try {
+        return await fn();
+      } finally {
+        globalThis.fetch = previous;
+      }
+    };
+
+    const balanceView = {
+      amount: 93.787276,
+      currency: 'USD',
+      limit: 390.53,
+      usedPercent: 76,
+      source: 'usage',
+      fetchedAt: '2026-11-20T12:00:00.000Z',
+    };
+
+    const respond = (data) => async () => ({ text: async () => JSON.stringify({ success: true, data }) });
+    const balanceBody = (extra) => ({ ok: true, profile: 'aimy', displayName: 'Aimy-艾米', refreshSeconds: 300, ...extra });
+
+    it('注册在输入框下方的统计行（composer.dock），排在 tok/s 与缓存命中右侧', () => {
+      const entry = barEntry();
+      assert.ok(entry, '没有注册余额胶囊');
+      assert.equal(entry.options.name, 'conversation.composer.dock');
+      // 该行已有 chat 注册的 activity(order 0) 与 usage(order 1)，我们必须排在后面
+      assert.equal(entry.options.order, 10);
+    });
+
+    it('摘要：金额 / 额度 · 剩余百分比', () => {
+      assert.equal(module.summarize(balanceView), '$93.79 / $390.53 · 剩 24%');
+    });
+
+    it('没有额度时不编造分母，也不编百分比', () => {
+      assert.equal(module.summarize({ ...balanceView, limit: undefined, usedPercent: undefined }), '$93.79');
+    });
+
+    it('认不出的币种用代码后缀，没有币种就不加符号', () => {
+      assert.equal(module.formatMoney(12, 'CNY'), '¥12.00');
+      assert.equal(module.formatMoney(12, 'USDT'), '12.00 USDT');
+      assert.equal(module.formatMoney(12), '12.00');
+    });
+
+    it('胶囊正文是「站名余额：金额」，额度与剩余百分比进 tooltip', async () => {
+      runtime.resetState();
+      await withFetch(respond(balanceBody({ view: balanceView })), async () => {
+        const tree = await mount(barEntry().component);
+        const text = textOf(tree);
+        // 那一行跟 tok/s 并排，撑宽了会把整行挤歪，所以正文只要站名 + 金额
+        assert.ok(text.includes('Aimy余额：$93.79'), '应显示「Aimy余额：$93.79」，实际：' + text);
+        assert.equal(text.includes('$390.53'), false, '额度不该占正文，实际：' + text);
+        const title = tree.props.title;
+        assert.ok(title.includes('Aimy-艾米'), 'tooltip 要说是哪个站，实际：' + title);
+        assert.ok(title.includes('$93.79 / $390.53'), 'tooltip 要有额度，实际：' + title);
+        assert.ok(title.includes('剩 24%'), 'tooltip 要有剩余百分比，实际：' + title);
+      });
+    });
+
+    it('站名取第一段：Aimy-艾米 → Aimy；认不出分隔符时退回全名', () => {
+      assert.equal(module.shortName('Aimy-艾米'), 'Aimy');
+      assert.equal(module.shortName('兼容模式'), '兼容模式');
+      assert.equal(module.shortName(''), '中转站');
+      assert.equal(module.pillLabel(balanceView, 'Aimy-艾米'), 'Aimy余额：$93.79');
+      assert.equal(module.pillLabel(balanceView, undefined), '中转站余额：$93.79');
+    });
+
+    it('关掉开关时整颗不渲染（dock 那行不留空位）', async () => {
+      runtime.resetState();
+      await withFetch(respond(balanceBody({ ok: false, view: null, disabled: true })), async () => {
+        const tree = await mount(barEntry().component);
+        assert.equal(tree, null);
+      });
+    });
+
+    it('查询失败时降级成灰字而不是消失', async () => {
+      runtime.resetState();
+      await withFetch(respond(balanceBody({ ok: false, view: null, error: '站点 502' })), async () => {
+        const tree = await mount(barEntry().component);
+        const text = textOf(tree);
+        assert.ok(text.includes('Aimy余额：不可用'), '失败要说清楚，实际：' + text);
+        assert.ok(tree.props.title.includes('Aimy-艾米'), 'tooltip 仍要显示是哪个站');
+      });
+    });
+
+    it('有旧读数时保留数字并标注（旧）', async () => {
+      runtime.resetState();
+      await withFetch(respond(balanceBody({ ok: false, view: balanceView, error: '站点 502' })), async () => {
+        const tree = await mount(barEntry().component);
+        const text = textOf(tree);
+        assert.ok(text.includes('$93.79'), '旧数字比空白有用，实际：' + text);
+        assert.ok(text.includes('（旧）'), '必须标出这是旧值，实际：' + text);
+      });
+    });
+
+    it('点击触发强制刷新（带 refresh=1）', async () => {
+      runtime.resetState();
+      const urls = [];
+      await withFetch(async (url) => {
+        urls.push(String(url));
+        return { text: async () => JSON.stringify({ success: true, data: balanceBody({ view: balanceView }) }) };
+      }, async () => {
+        const tree = await mount(barEntry().component);
+        assert.equal(urls.length, 1, '首屏拉一次');
+        assert.match(urls[0], /\/balance$/);
+        tree.props.onClick();
+        await settle();
+        assert.equal(urls.length, 2, '点击应再拉一次');
+        assert.match(urls[1], /\/balance\?refresh=1$/, '点击必须绕过缓存');
+      });
+    });
   });
 });

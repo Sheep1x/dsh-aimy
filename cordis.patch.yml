@@ -38,3 +38,19 @@
         defaultMaxTokens: 128000
         # 是否给模型声明 image 模态；面板「图片输入」开关会覆盖它并落盘
         imageInput: true
+
+        # ── 余额胶囊（输入框下方统计行 composer.dock）──────────────
+        # 挂在 `143 tok/s · 缓存命中 96% · 7%` 那一行的最右侧，显示 `$93.79`，
+        # 站名/额度/剩余百分比在 hover tooltip 里。
+        # 取值链：template（若配）→ /v1/usage → billing 双接口 → /api/usage/token/
+        balanceBar:
+          enabled: true
+          # 轮询间隔（秒），下限 30；页面不可见时不轮询
+          refreshSeconds: 300
+          # 自定义查询模板：内置探测链认不出的站点才需要配。
+          # 结构：url / method / headers / body / path / currency / script
+          #   path：JSON 路径，如 'data.balance'
+          #   script：`return { balance: data.quota / 500000, currency: 'USD' }`
+          #           （可用 helpers.num / helpers.pick）
+          # 配了模板就只用模板，失败也不再回落到内置探测链。
+          template: null

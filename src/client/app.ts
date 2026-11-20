@@ -4,6 +4,7 @@
  */
 import { BRAND_ICON_PATH } from '../shared/brand';
 import { needsDiagnostics } from '../shared/types';
+import { makeBalanceBar, formatMoney, summarize, pillLabel, shortName } from './balance-bar';
 import { makeSection } from './section';
 import type * as ReactNS from 'react';
 
@@ -11,6 +12,8 @@ import type * as ReactNS from 'react';
 const PANEL_ID = 'dsh-aimy';
 /** 侧栏图标与面板标题的显示名。 */
 const PANEL_LABEL = 'Aimy-艾米';
+/** 余额胶囊在 composer.dock 里的 id（list 槽，同 id 重复注册会顶掉自己）。 */
+const BALANCE_BAR_ID = 'dsh-aimy-balance';
 
 /** 返回 DSH 插件 factory：参数是 require，返回值是 module。 */
 export function makeFactory(): (require: (mod: string) => any) => any {
@@ -83,11 +86,25 @@ export function makeFactory(): (require: (mod: string) => any) => any {
           RelayIcon,
         );
       });
+
+      // 余额胶囊：挂在输入框下方那一行统计栏（「143 tok/s · 缓存命中 96% · 7%」）。
+      // 该行是 dsh-client-ui-chat 注册的 `conversation.composer.dock`（kind:list），
+      // 里面已有 id `activity`(order 0) 与 `usage`(order 1)；我们用 order 10 排在它们
+      // 右侧，样式与它们一致（pill：tertiary 色、小一号字号、tabular-nums）。
+      // 关掉开关时组件自身返回 null，那行不留空位。
+      const BalancePill = makeBalanceBar(deps);
+      ctx.slots.inject('conversation.composer.dock', function* () {
+        yield ctx.slots.register(
+          { name: 'conversation.composer.dock', id: BALANCE_BAR_ID, order: 10 },
+          BalancePill,
+        );
+      });
     }
 
-    // needsDiagnostics 一并导出：纯判断，供单测直接验证「什么状态才值得拉诊断」。
-    // DSH 只用 apply / inject / name，多导出一个不影响契约。
-    module.exports = { apply, inject, name, needsDiagnostics };
+    // needsDiagnostics / summarize / formatMoney 一并导出：都是纯函数，
+    // 供单测直接验证「什么状态才值得拉诊断」与「余额文案怎么拼」。
+    // DSH 只用 apply / inject / name，多导出不影响契约。
+    module.exports = { apply, inject, name, needsDiagnostics, summarize, formatMoney, pillLabel, shortName };
     return module.exports;
   };
 }

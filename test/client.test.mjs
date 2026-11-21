@@ -252,11 +252,11 @@ describe('dsh-aimy client', () => {
     assert.ok(textOf(tree).includes('已复制'), '点击后应提示已复制');
   });
 
-  it('协议下拉框：三个选项齐全，默认选中 Responses', async () => {
+  it('协议下拉框：四个选项齐全，默认选中 Responses', async () => {
     const Panel = registry.entries.get('main:dsh-aimy').component;
     const tree = await mount(Panel);
 
-    // 找协议下拉：它的 onChange 会 POST /config，且选项是三种协议
+    // 找协议下拉：它的 onChange 会 POST /config，且选项是四种协议
     const selects = elements(tree).filter((el) => el.type === 'select');
     const protoSelect = selects.find((el) =>
       elements(el).some((o) => o.type === 'option' && o.props.value === 'openai-responses'),
@@ -266,8 +266,18 @@ describe('dsh-aimy client', () => {
     const options = elements(protoSelect)
       .filter((el) => el.type === 'option')
       .map((el) => ({ value: el.props.value, text: textOf(el) }));
-    assert.deepEqual(options.map((o) => o.value), ['openai-responses', 'openai-completions', 'anthropic-messages']);
-    assert.deepEqual(options.map((o) => o.text), ['OpenAI Responses', 'OpenAI Chat Completions', 'Anthropic Messages']);
+    assert.deepEqual(options.map((o) => o.value), [
+      'openai-responses',
+      'openai-completions',
+      'anthropic-messages',
+      'google-generative-ai',
+    ]);
+    assert.deepEqual(options.map((o) => o.text), [
+      'OpenAI Responses',
+      'OpenAI Chat Completions',
+      'Anthropic Messages',
+      'Google Gemini (v1beta)',
+    ]);
 
     // 当前值应是 Responses（默认）
     assert.equal(protoSelect.props.value, 'openai-responses');

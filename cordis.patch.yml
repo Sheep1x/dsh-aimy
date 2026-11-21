@@ -22,6 +22,7 @@
         # pi-ai 路由名
         routeName: 'onehub'
         # 协议：openai-responses（默认）| openai-completions | anthropic-messages
+        #      | google-generative-ai（Gemini；地址会自动归整成 /v1beta）
         api: 'openai-responses'
 
         # ── 兼容模式 ──────────────────────────────────────────────

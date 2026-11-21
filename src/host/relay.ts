@@ -27,13 +27,15 @@ export interface RelayOptions {
 }
 
 /**
- * 中转站 API 根：去掉尾部斜杠，并容忍用户把 `/v1` 一起填进来。
- * 本文件所有路径都以 `/v1/...` 开头，若不剥掉会拼成 `/v1/v1/models`。
+ * 中转站 API 根：去掉尾部斜杠，并容忍用户把 `/v1` 或 `/v1beta` 一起填进来。
+ * 本文件所有路径都以版本段开头（`/v1/...` 或 Gemini 的 `/v1beta/...`），
+ * 若不剥掉会拼成 `/v1/v1/models`。
  */
 export function apiRoot(baseURL: string): string {
   let trimmed = baseURL.trim().replace(/\/+$/, '');
   // 先剥掉用户可能整段粘贴的端点路径
   trimmed = trimmed
+    .replace(/\/v1beta\/models\/[^/]+(?::[a-zA-Z]+)?$/i, '')
     .replace(/\/v1\/chat\/completions$/i, '')
     .replace(/\/v1\/responses$/i, '')
     .replace(/\/chat\/completions$/i, '')
@@ -41,8 +43,8 @@ export function apiRoot(baseURL: string): string {
     .replace(/\/v1\/messages$/i, '')
     .replace(/\/messages$/i, '')
     .replace(/\/completions$/i, '');
-  // 再剥掉 API 版本段（本文件所有路径自带 /v1）
-  return trimmed.replace(/\/v1$/i, '').replace(/\/+$/, '');
+  // 再剥掉 API 版本段（本文件所有路径自带版本段）
+  return trimmed.replace(/\/v1(beta)?$/i, '').replace(/\/+$/, '');
 }
 
 function normalizeBase(baseURL: string): string {
@@ -61,6 +63,13 @@ async function request<T>(opts: RelayOptions, pathname: string, init: RequestIni
   const doFetch = opts.fetchImpl ?? fetch;
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), opts.timeoutMs ?? 15000);
+  /*
+   * Gemini 协议的官方鉴权是 `x-goog-api-key`（或 `?key=`），不认 Bearer。
+   * 但 one-hub 系中转站两种都收（实测 Bearer 也能过）。所以这里在 Gemini 下
+   * **两个头都发**：真 Google 端点靠 x-goog-api-key，中转站靠 Bearer，互不干扰。
+   */
+  const googleAuth: Record<string, string> =
+    opts.api === 'google-generative-ai' ? { 'x-goog-api-key': opts.apiKey } : {};
   try {
     const res = await doFetch(normalizeBase(opts.baseURL) + pathname, {
       ...init,
@@ -68,6 +77,7 @@ async function request<T>(opts: RelayOptions, pathname: string, init: RequestIni
       headers: {
         Authorization: 'Bearer ' + opts.apiKey,
         'Content-Type': 'application/json',
+        ...googleAuth,
         ...(init.headers ?? {}),
       },
     });
@@ -162,6 +172,21 @@ export async function switchTokenGroup(opts: RelayOptions, group: string): Promi
 
 /** GET /v1/models —— 返回当前分组可用的模型 id。 */
 export async function fetchModels(opts: RelayOptions): Promise<RelayModel[]> {
+  /*
+   * Gemini 协议的站点目录在 `/v1beta/models`，返回的是
+   * `{models:[{name:'models/gemini-2.5-flash', displayName, inputTokenLimit, outputTokenLimit}]}`
+   * —— 与 OpenAI 的 `{data:[{id}]}` 完全是两套形状。
+   *
+   * 但 Gemini 站点（尤其 one-hub 系中转站）通常也保留 OpenAI 兼容的
+   * `/v1/models`，而 `/v1beta/models` 可能因为「当前分组没有 Gemini 渠道」
+   * 返回空数组。所以这里**先按协议取原生目录，拿不到非空结果再回落 /v1/models**，
+   * 避免因为协议一换就把整个模型选择器清空。
+   */
+  if ((opts.api ?? DEFAULT_API) === 'google-generative-ai') {
+    const native = await fetchGoogleModels(opts);
+    if (native.length > 0) return native;
+  }
+
   const body = await request<{ data?: unknown }>(opts, '/v1/models');
   const list = Array.isArray(body.data) ? body.data : [];
   const seen = new Set<string>();
@@ -172,6 +197,43 @@ export async function fetchModels(opts: RelayOptions): Promise<RelayModel[]> {
     seen.add(id);
     const capacity = typeof item === 'string' ? {} : declaredCapacity(item as Record<string, unknown>);
     models.push({ id, name: id, ...capacity });
+  }
+  models.sort((a, b) => a.id.localeCompare(b.id));
+  return models;
+}
+
+/**
+ * GET /v1beta/models —— Gemini 原生目录。
+ *
+ * 失败一律返回空数组（由调用方回落到 /v1/models）：目录拉取失败本身由
+ * 回落路径去报错，这里再抛一次只会把错误说成「Gemini 目录不可用」。
+ */
+async function fetchGoogleModels(opts: RelayOptions): Promise<RelayModel[]> {
+  let body: { models?: unknown };
+  try {
+    body = await request<{ models?: unknown }>(opts, '/v1beta/models');
+  } catch {
+    return [];
+  }
+  const list = Array.isArray(body.models) ? body.models : [];
+  const seen = new Set<string>();
+  const models: RelayModel[] = [];
+  for (const item of list) {
+    if (!item || typeof item !== 'object') continue;
+    const entry = item as Record<string, unknown>;
+    // name 形如 `models/gemini-2.5-flash`，路由里要用不带前缀的裸 id
+    const raw = String(entry.name ?? '');
+    const id = raw.replace(/^models\//i, '');
+    if (!id || seen.has(id)) continue;
+    seen.add(id);
+    const contextWindow = firstPositive(entry.inputTokenLimit, entry.contextWindow);
+    const maxTokens = firstPositive(entry.outputTokenLimit, entry.maxTokens);
+    models.push({
+      id,
+      name: String(entry.displayName ?? id),
+      ...(contextWindow === undefined ? {} : { contextWindow }),
+      ...(maxTokens === undefined ? {} : { maxTokens }),
+    });
   }
   models.sort((a, b) => a.id.localeCompare(b.id));
   return models;
@@ -242,14 +304,16 @@ function deniesModel(error: RelayError): boolean {
 /**
  * 按协议给出一次「最小生成」探测的端点与请求体。
  *
- * 三种协议的探测载荷不同，必须各自匹配，否则上游会按「请求格式错误」返回 400，
+ * 四种协议的探测载荷不同，必须各自匹配，否则上游会按「请求格式错误」返回 400，
  * 而 400 里带 model 字样时还会被 deniesModel 误判成「模型不可用」：
  *
  *   openai-responses   : POST /v1/responses    { input, max_output_tokens }
  *   openai-completions : POST /v1/chat/completions { messages, max_tokens }
  *   anthropic-messages : POST /v1/messages     { messages, max_tokens }
+ *   google-generative-ai: POST /v1beta/models/{id}:generateContent { contents, generationConfig }
  *
  * Anthropic 协议必须带 anthropic-version 头，否则上游直接拒绝。
+ * Gemini 协议把模型 id 放在**路径里**（而不是请求体），且路径自带版本段 `/v1beta`。
  */
 function probeRequest(api: RelayApi, modelId: string): { pathname: string; init: RequestInit } {
   const base = { method: 'POST' as const };
@@ -275,6 +339,19 @@ function probeRequest(api: RelayApi, modelId: string): { pathname: string; init:
           messages: [{ role: 'user', content: 'ping' }],
           max_tokens: 1,
           stream: false,
+        }),
+      },
+    };
+  }
+
+  if (api === 'google-generative-ai') {
+    return {
+      pathname: '/v1beta/models/' + encodeURIComponent(modelId) + ':generateContent',
+      init: {
+        ...base,
+        body: JSON.stringify({
+          contents: [{ role: 'user', parts: [{ text: 'ping' }] }],
+          generationConfig: { maxOutputTokens: 1 },
         }),
       },
     };

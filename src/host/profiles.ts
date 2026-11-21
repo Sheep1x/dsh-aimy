@@ -5,8 +5,9 @@
  *   - aimy：内置预设（本站中转站）。URL 固化在代码/配置里，界面上不展示、不可编辑。
  *   - compat：兼容模式，用户自己填 URL + 协议（new-api / sub2api / 任意 OpenAI 兼容网关）。
  *
- * 协议支持三种（与 pi-ai 的 supportedProtocols() 一致）：
- *   openai-responses（默认）/ openai-completions / anthropic-messages。
+ * 协议支持四种（与 pi-ai 的 supportedProtocols() 一致）：
+ *   openai-responses（默认）/ openai-completions / anthropic-messages /
+ *   google-generative-ai（Gemini，baseURL 必须自带 `/v1beta`）。
  *
  * 密钥都走 DSH 凭据库，按档案各用各的引用名，互不覆盖。
  * 兼容模式只把「非密钥」的地址与协议落盘（profiles.json）。
@@ -176,14 +177,19 @@ export function normalizeImageInput(value: unknown): boolean | undefined {
 }
 
 /**
- * 把任意输入归到三种受支持协议之一。
+ * 把任意输入归到四种受支持协议之一。
  *
  * 取值必须与 @deepseek-ai/dsh-llm-pi-ai 的 supportedProtocols() 完全一致，
  * 否则 pi-ai 的 Config 校验会报 "names api ..., which this build cannot serve"。
  * 未识别时退回 DEFAULT_API（Responses），而不是旧实现那样一律塞进 completions。
  */
 export function normalizeApi(value: unknown): RelayApi {
-  if (value === 'openai-responses' || value === 'openai-completions' || value === 'anthropic-messages') {
+  if (
+    value === 'openai-responses' ||
+    value === 'openai-completions' ||
+    value === 'anthropic-messages' ||
+    value === 'google-generative-ai'
+  ) {
     return value;
   }
   // 兼容旧写法 / 常见别名
@@ -192,6 +198,9 @@ export function normalizeApi(value: unknown): RelayApi {
     if (v === 'responses' || v === 'openai-response' || v === 'openai_responses') return 'openai-responses';
     if (v === 'completions' || v === 'chat-completions' || v === 'openai' || v === 'openai-chat') return 'openai-completions';
     if (v === 'anthropic' || v === 'messages' || v === 'claude') return 'anthropic-messages';
+    if (v === 'google' || v === 'gemini' || v === 'google-ai' || v === 'google-generative' || v === 'generative-ai') {
+      return 'google-generative-ai';
+    }
   }
   return DEFAULT_API;
 }

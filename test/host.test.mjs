@@ -14,7 +14,7 @@ const KEY = 'sk-test-key';
  * 用来验证 /v1/models 里带 context_length / max_output_tokens 时会被采纳。
  * 运行中可用 `setCapacity()` 改声明，用来验证容量变化会触发重写。
  */
-function makeRelay({ supportsSwitch, capacityModels = {}, usage = false, custom = false }) {
+function makeRelay({ supportsSwitch, capacityModels = {}, usage = false, custom = false, google = null }) {
   const state = { group: 'default', log: [], usageHits: 0, customHits: 0 };
   const capacity = { ...capacityModels };
   const groups = [
@@ -70,6 +70,20 @@ function makeRelay({ supportsSwitch, capacityModels = {}, usage = false, custom 
         });
         return;
       }
+    }
+
+    // Gemini 原生目录：/v1beta/models，字段名与 OpenAI 完全不同
+    if (google !== null && url.pathname === '/v1beta/models') {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({
+        models: google.map((m) => ({
+          name: 'models/' + m.id,
+          displayName: m.displayName ?? m.id,
+          inputTokenLimit: m.inputTokenLimit,
+          outputTokenLimit: m.outputTokenLimit,
+        })),
+      }));
+      return;
     }
 
     if (url.pathname === '/v1/models') {
@@ -744,12 +758,66 @@ describe('baseURL 归整（OpenAI 补 /v1，Anthropic 不带 /v1）', () => {
     assert.equal(profile.baseURL, relayBase + '/v1');
   });
 
-  it('三种协议都能挂载，api 原样透传', async () => {
-    for (const api of ['openai-responses', 'openai-completions', 'anthropic-messages']) {
+  it('Gemini 协议：地址补成 /v1beta（SDK 不再补版本段）', async () => {
+    const profile = await profileFor(relayBase, 'google-generative-ai');
+    assert.equal(profile.baseURL, relayBase + '/v1beta');
+    assert.equal(profile.api, 'google-generative-ai', '协议必须原样透传给 pi-ai');
+  });
+
+  it('Gemini 协议：已填 /v1beta 时不重复拼接', async () => {
+    const profile = await profileFor(relayBase + '/v1beta', 'google-generative-ai');
+    assert.equal(profile.baseURL, relayBase + '/v1beta');
+  });
+
+  it('Gemini 协议：误填 /v1 会改成 /v1beta', async () => {
+    const profile = await profileFor(relayBase + '/v1', 'google-generative-ai');
+    assert.equal(profile.baseURL, relayBase + '/v1beta');
+  });
+
+  it('Gemini 协议：整段粘贴 generateContent 端点会被剥回 /v1beta', async () => {
+    const profile = await profileFor(relayBase + '/v1beta/models/gemini-2.5-flash:generateContent', 'google-generative-ai');
+    assert.equal(profile.baseURL, relayBase + '/v1beta');
+  });
+
+  it('Gemini 协议：模型目录走 /v1beta/models，容量字段按 Gemini 命名映射', async () => {
+    const dshHome = mkdtempSync(join(tmpdir(), 'dsh-aimy-gemini-models-'));
+    const relay = makeRelay({
+      supportsSwitch: false,
+      google: [{ id: 'gemini-2.5-flash', displayName: 'Gemini 2.5 Flash', inputTokenLimit: 1048576, outputTokenLimit: 65536 }],
+    });
+    await new Promise((r) => relay.server.listen(0, '127.0.0.1', r));
+
+    try {
+      const plugin = await startPlugin('http://127.0.0.1:' + relay.server.address().port, dshHome, {
+        config: { api: 'google-generative-ai' },
+      });
+      const { body } = await json(plugin.base + '/state');
+      await new Promise((r) => plugin.server.close(r));
+
+      assert.equal(body.success, true, JSON.stringify(body));
+      assert.equal(body.data.connected, true);
+      const model = body.data.models.find((m) => m.id === 'gemini-2.5-flash');
+      assert.ok(model, '应从 /v1beta/models 读到模型，实际：' + JSON.stringify(body.data.models));
+      assert.equal(model.contextWindow, 1048576, 'inputTokenLimit 要映射成上下文窗口');
+      assert.equal(model.maxTokens, 65536, 'outputTokenLimit 要映射成输出上限');
+      assert.equal(model.capacitySource, 'relay', '站点自己声明的容量，来源记为 relay');
+    } finally {
+      await new Promise((r) => relay.server.close(r));
+      rmSync(dshHome, { recursive: true, force: true });
+    }
+  });
+
+  it('四种协议都能挂载，api 原样透传', async () => {
+    const expected = {
+      'openai-responses': '/v1',
+      'openai-completions': '/v1',
+      'anthropic-messages': '',
+      'google-generative-ai': '/v1beta',
+    };
+    for (const [api, suffix] of Object.entries(expected)) {
       const profile = await profileFor(relayBase, api);
       assert.equal(profile.api, api, api + ' 应原样透传');
-      // anthropic 不带 /v1，两个 OpenAI 系都带
-      assert.equal(profile.baseURL, api === 'anthropic-messages' ? relayBase : relayBase + '/v1', api + ' 的 baseURL 归整错误');
+      assert.equal(profile.baseURL, relayBase + suffix, api + ' 的 baseURL 归整错误');
     }
   });
 });
@@ -1469,13 +1537,16 @@ describe('模型可达性探测', () => {
         res.end(JSON.stringify({ success: true, data: { group: state.group, groups: [{ symbol: 'default', ratio: 1 }] } }));
         return;
       }
-      // 三个协议各自的生成端点都要认：探测走错端点即说明修复回归
-      if (GENERATE_PATHS.includes(url.pathname)) {
+      // 四种协议各自的生成端点都要认：探测走错端点即说明修复回归
+      const googleModel = googleModelOf(url.pathname);
+      if (GENERATE_PATHS.includes(url.pathname) || googleModel !== null) {
         let raw = '';
         req.on('data', (c) => { raw += c; });
         req.on('end', () => {
-          let model = '';
-          try { model = JSON.parse(raw)?.model ?? ''; } catch { /* ignore */ }
+          let model = googleModel ?? '';
+          if (googleModel === null) {
+            try { model = JSON.parse(raw)?.model ?? ''; } catch { /* ignore */ }
+          }
           state.probes.push(model);
           state.probePaths.push(url.pathname);
           const b = behaviour[model];
@@ -1497,6 +1568,15 @@ describe('模型可达性探测', () => {
 
   /** 探测可用的生成端点：探测请求可能落在其中任意一个，取决于线路协议。 */
   const GENERATE_PATHS = ['/v1/chat/completions', '/v1/responses', '/v1/messages'];
+
+  /**
+   * Gemini 协议的探测端点把模型名放在路径里（/v1beta/models/<id>:generateContent），
+   * 与另外三种把模型名放在 body 里不同，所以要单独从路径里取。
+   */
+  function googleModelOf(pathname) {
+    const m = /^\/v1beta\/models\/([^/:]+):generateContent$/.exec(pathname);
+    return m === null ? null : decodeURIComponent(m[1]);
+  }
 
   it('明确拒绝的模型判为 unavailable，暂时性故障保持 unknown', async () => {
     const dshHome = mkdtempSync(join(tmpdir(), 'dsh-aimy-probe-'));
@@ -1642,6 +1722,32 @@ describe('模型可达性探测', () => {
         ['/v1/messages'],
         'anthropic 协议必须打 /v1/messages，实际：' + relay.state.probePaths.join(','),
       );
+      assert.equal(body.data.reachability['model-a'], 'ok');
+    } finally {
+      await new Promise((r) => relay.server.close(r));
+      rmSync(dshHome, { recursive: true, force: true });
+    }
+  });
+
+  it('探测端点跟随协议：gemini 协议打 /v1beta/models/{id}:generateContent', async () => {
+    const dshHome = mkdtempSync(join(tmpdir(), 'dsh-aimy-probe-api-google-'));
+    const relay = makeProbeRelay({ 'model-a': {} });
+    await new Promise((r) => relay.server.listen(0, '127.0.0.1', r));
+    const baseURL = 'http://127.0.0.1:' + relay.server.address().port;
+
+    try {
+      const plugin = await startPlugin(baseURL, dshHome, {
+        config: { probeModels: true, api: 'google-generative-ai' },
+      });
+      const { body } = await json(plugin.base + '/refresh', { method: 'POST' });
+      await new Promise((r) => plugin.server.close(r));
+
+      assert.deepEqual(
+        relay.state.probePaths,
+        ['/v1beta/models/model-a:generateContent'],
+        'gemini 协议必须打 /v1beta/models/{id}:generateContent，实际：' + relay.state.probePaths.join(','),
+      );
+      assert.deepEqual(relay.state.probes, ['model-a'], '模型名要从路径里取出来');
       assert.equal(body.data.reachability['model-a'], 'ok');
     } finally {
       await new Promise((r) => relay.server.close(r));

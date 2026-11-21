@@ -110,7 +110,7 @@ git clone https://github.com/Sheep1x/dsh-aimy.git
 cd dsh-aimy
 npm install        # 装 esbuild 等构建依赖
 npm run build      # 产出 lib/index.js 与 lib/client.js
-npm test           # 136 项测试（host + capacity + group-cache + client）
+npm test           # 203 项测试（host + capacity + group-cache + balance + client）
 ```
 
 然后在 DSH profile 里装本地目录，并把 `dsh-aimy` 加进 `dsh.profile.bundles`（`~/.dsh/profiles/<profile>/package.json`）。
@@ -215,7 +215,7 @@ DSH 的选择器策略，本插件不代替用户做这个决定。
 | 站点能力 | 支持情况 |
 |---|---|
 | `GET /v1/models`（标准 OpenAI 格式） | ✅ 必需。**绝大多数中转站都有**，new-api / sub2api / one-hub 均满足 |
-| 调用模型 | ✅ 三种协议任选（Responses / Chat Completions / Anthropic） |
+| 调用模型 | ✅ 四种协议任选（Responses / Chat Completions / Anthropic / Gemini） |
 | `GET/PUT /v1/token/group`（分组切换） | ⚠️ **可选能力**。有则支持就地切组；没有则自动降级为只读 |
 
 **分组接口是可选扩展，不是所有站点都有。** new-api / sub2api 属于通用 OpenAI 兼容网关，
@@ -388,7 +388,7 @@ balanceBar:
   - 侧栏图标是 svg 且跟随 `size`/`active`
   - 面板展示默认地址并标注「预设地址（不可修改）」
   - 点地址 → 写剪贴板 → 提示「已复制」
-  - 协议下拉三选项齐全、暗色适配、切换会 POST 保存
+  - 协议下拉四选项齐全、暗色适配、切换会 POST 保存
   - 图片输入开关默认勾选、取消后只提交 `{imageInput}`
 
 host 覆盖（57 项）：正常读取 / 真实切组 / 模型路由挂载 / 切组后重挂载 / 同分组不重挂载 / 中转站报错透传 /
@@ -416,9 +416,9 @@ src/
   client/balance-bar.ts  分组胶囊 + 余额胶囊（注册进 conversation.composer.dock）
 ```
 
-## 协议（三种，与 pi-ai 的 supportedProtocols() 一致）
+## 协议（四种，与 pi-ai 的 supportedProtocols() 一致）
 
-`openai-responses`（默认）· `openai-completions` · `anthropic-messages`
+`openai-responses`（默认）· `openai-completions` · `anthropic-messages` · `google-generative-ai`
 
 **协议在界面上是下拉框，两个 Tab 都能改**：面板状态卡片里的「协议」一行，选中即保存
 （`POST /config?profile=aimy|compat`，只传 `api`），改完服务端会按新协议重新挂载模型路由。
@@ -434,9 +434,18 @@ Config 校验会报 *names api …, which this build cannot serve*。面板的�
 `shared/types.ts` 的 `API_OPTIONS` 生成，新增协议只需改那一处。
 
 `normalizeApi()` 还接受常见别名（`responses` / `completions` / `anthropic` / `messages` /
-`claude` …），未识别时回退到默认的 Responses。
+`claude` / `gemini` / `google` …），未识别时回退到默认的 Responses。
 
-## 地址怎么填（/v1 可填可不填）
+**Gemini（`google-generative-ai`）与另外三种有一处关键差异**：pi-ai 的 GoogleGenAI 客户端
+在拿到 `baseUrl` 后会把 `apiVersion` 置成空串（`@google/genai` 里 `apiVersion !== ''` 才拼版本段），
+也就是说**版本段必须由 baseURL 自带**。所以选了这个协议，地址会被归整成以 `/v1beta` 结尾，
+否则请求会打到 `{host}/models/xxx:generateContent` 上直接 404。
+它的模型目录也走原生形状 `GET /v1beta/models`（`{models:[{name:'models/gemini-2.5-flash',
+inputTokenLimit, outputTokenLimit}]}`），插件优先读它、拿不到再回落 `/v1/models`；
+探测请求打 `POST /v1beta/models/{id}:generateContent`，鉴权同时发 `Authorization: Bearer`
+与 `x-goog-api-key`（两者中转站都收，实测不带则 401）。
+
+## 地址怎么填（版本段可填可不填）
 
 OpenAI 系与 Anthropic 的 SDK 拼路径口径相反，所以插件按协议归整：
 
@@ -445,12 +454,15 @@ OpenAI 系与 Anthropic 的 SDK 拼路径口径相反，所以插件按协议归
 | `openai-responses`（默认） | `…/responses` | baseURL **必须**以 `/v1` 结尾 → 没填自动补，已填不重复 |
 | `openai-completions` | `…/chat/completions` | 同上 |
 | `anthropic-messages` | `…/v1/messages` | baseURL **不能**带 `/v1` → 填了自动剥掉 |
+| `google-generative-ai` | `…/models/{id}:generateContent` | baseURL **必须**以 `/v1beta` 结尾 → 没填补 `/v1beta`，误填 `/v1` 也改成 `/v1beta` |
 
-容错（三种协议都适用）：用户若整段粘贴了端点路径（`…/v1/chat/completions`、`…/v1/messages`），
+容错（四种协议都适用）：用户若整段粘贴了端点路径（`…/v1/chat/completions`、`…/v1/messages`、
+`…/v1beta/models/gemini-2.5-flash:generateContent`），
 会先被剥回根地址；我们自己的模型/分组拉取也会用 `apiRoot()` 做同样归整，
 所以不会出现 `/v1/v1/models`。
 
-因此面板里填 `https://gateway.example.com` 或 `https://gateway.example.com/v1` 都能用。
+因此面板里填 `https://gateway.example.com`、`https://gateway.example.com/v1`、
+`https://gateway.example.com/v1beta` 都能用，插件按协议自己补版本段。
 
 ## 切组后模型失效怎么处理
 
@@ -612,5 +624,5 @@ pnpm add dsh-aimy@<版本>
 
 [MIT](LICENSE) © Sheep1x
 
-> 注意区分用词：本文档里的「协议」若出现在「三种协议 / 线路协议 / OpenAI Responses」
+> 注意区分用词：本文档里的「协议」若出现在「四种协议 / 线路协议 / OpenAI Responses」
 > 语境下，指的是**模型线路协议**（wire protocol）；**开源许可**一律写作「License」。

@@ -47,10 +47,15 @@ export interface TokenGroupState {
 }
 
 /**
- * 三种线路协议，取值与 @deepseek-ai/dsh-llm-pi-ai 的 supportedProtocols() 完全一致，
+ * 四种线路协议，取值与 @deepseek-ai/dsh-llm-pi-ai 的 supportedProtocols() 完全一致，
  * 顺序也与它相同（它把「手写网关最常说的协议」放在最前，配置界面应据此决定默认值）。
+ *
+ * google-generative-ai 是这个 DSH 构建里也支持的第四种：pi-ai 用 @google/genai
+ * 发 `{baseURL}/models/{id}:generateContent`，且它把 apiVersion 置空 —— 也就是
+ * **版本段必须由 baseURL 自己带上（`/v1beta`）**，SDK 不会再补。这与 OpenAI 系
+ * 要 `/v1`、Anthropic 不要版本段都不一样，见 host/provider.ts 的归整函数。
  */
-export type RelayApi = 'openai-responses' | 'openai-completions' | 'anthropic-messages';
+export type RelayApi = 'openai-responses' | 'openai-completions' | 'anthropic-messages' | 'google-generative-ai';
 
 /** 默认协议：目标站点主推 Responses。 */
 export const DEFAULT_API: RelayApi = 'openai-responses';
@@ -60,6 +65,7 @@ export const API_OPTIONS: ReadonlyArray<{ value: RelayApi; label: string }> = [
   { value: 'openai-responses', label: 'OpenAI Responses' },
   { value: 'openai-completions', label: 'OpenAI Chat Completions' },
   { value: 'anthropic-messages', label: 'Anthropic Messages' },
+  { value: 'google-generative-ai', label: 'Google Gemini (v1beta)' },
 ];
 
 /** 密钥的存储状态（描述，从不包含密钥值）。 */

@@ -26,7 +26,7 @@ export interface ProviderOptions {
   baseURL: string;
   /** 凭据引用名，交给 pi-ai 走 harness 凭据链解析 */
   apiKeyRef: string;
-  /** 线路协议：openai-responses | openai-completions | anthropic-messages */
+  /** 线路协议：openai-responses | openai-completions | anthropic-messages | google-generative-ai */
   api?: RelayApi;
   models: RelayModel[];
   defaultContextWindow: number;
@@ -86,15 +86,18 @@ export function pickPlugin(adapter: any, specifier = DEFAULT_ADAPTER): any {
 }
 
 /**
- * 按协议归整 baseURL —— 两种 SDK 的路径拼接口径不同：
+ * 按协议归整 baseURL —— 各 SDK 的路径拼接口径不同：
  *
- *   openai-completions : SDK 自己拼 `/chat/completions`  → baseURL 必须以 `/v1` 结尾
- *   anthropic-messages : SDK 自己拼 `/v1/messages`       → baseURL 不能带 `/v1`
+ *   openai-completions   : SDK 自己拼 `/chat/completions`  → baseURL 必须以 `/v1` 结尾
+ *   anthropic-messages   : SDK 自己拼 `/v1/messages`       → baseURL 不能带 `/v1`
+ *   google-generative-ai : SDK 用 `baseUrl` 原样拼 `/models/{id}:generateContent`，
+ *                          且把 apiVersion 置空 → baseURL 必须自带 `/v1beta`
  *
  * 因此这里统一处理「用户怎么填都能用」：
- *   - 用户填了完整端点（…/chat/completions、…/v1/messages）→ 先剥掉
+ *   - 用户填了完整端点（…/chat/completions、…/v1/messages、…/v1beta/models/x:generateContent）→ 先剥掉
  *   - OpenAI 协议：缺 `/v1` 自动补，已有则不重复补
  *   - Anthropic 协议：多余的 `/v1` 自动剥掉
+ *   - Gemini 协议：多余的 `/v1` 换成 `/v1beta`，缺则补上 `/v1beta`
  */
 export function normalizeBaseURLForApi(baseURL: string, api: RelayApi = DEFAULT_API): string {
   let trimmed = baseURL.trim().replace(/\/+$/, '');
@@ -103,6 +106,16 @@ export function normalizeBaseURLForApi(baseURL: string, api: RelayApi = DEFAULT_
   if (api === 'anthropic-messages') {
     trimmed = trimmed.replace(/\/v1\/messages$/i, '').replace(/\/messages$/i, '');
     return trimmed.replace(/\/v1$/i, '');
+  }
+
+  if (api === 'google-generative-ai') {
+    // 整段粘贴的 Gemini 端点：/v1beta/models/gemini-2.5-flash:generateContent
+    trimmed = trimmed
+      .replace(/\/v1beta\/models\/[^/]+(?::[a-zA-Z]+)?$/i, '')
+      .replace(/\/models\/[^/]+(?::[a-zA-Z]+)?$/i, '');
+    // 版本段统一成 /v1beta（用户可能填了 /v1，也可能什么都没填）
+    trimmed = trimmed.replace(/\/v1(beta)?$/i, '');
+    return trimmed + '/v1beta';
   }
 
   // OpenAI 系（completions 与 responses）由 SDK 拼 /v1/... 之外的路径，

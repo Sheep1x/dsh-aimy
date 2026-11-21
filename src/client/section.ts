@@ -638,7 +638,7 @@ export function makeSection(deps: SectionDeps) {
             style: { ...S.select, colorScheme: dark ? 'dark' : 'light', flex: '0 0 220px', minWidth: 180 },
             value: state && state.api ? state.api : compatApi,
             disabled: busy,
-            title: '三种协议对应中转站的三套线路，切换后会重新挂载模型路由',
+            title: '四种协议对应中转站的四套线路，切换后会重新挂载模型路由',
             onChange: (e: any) => void saveApi(e.target.value as RelayApi),
           },
           ...API_OPTIONS.map((opt) => h('option', { key: opt.value, value: opt.value, style: S.option }, opt.label)),
@@ -760,7 +760,7 @@ export function makeSection(deps: SectionDeps) {
             h(
               'div',
               { style: S.hint },
-              '适配 new-api / sub2api / 任意 OpenAI 兼容网关。地址填到域名即可：OpenAI 协议会自动补 /v1，Anthropic 协议不会带 /v1（两者都会剥离你误填的完整端点路径）。这类站点通常没有 /v1/token/group，分组切换会自动降级为只读。',
+              '适配 new-api / sub2api / 任意 OpenAI 兼容网关。地址填到域名即可：OpenAI 协议会自动补 /v1，Anthropic 协议不会带 /v1，Gemini 协议会补成 /v1beta（三者都会剥离你误填的完整端点路径）。这类站点通常没有 /v1/token/group，分组切换会自动降级为只读。',
             ),
           )
         : null;

@@ -104,7 +104,7 @@ function providerState(
  *
  * @returns 分组状态；站点没有该接口时返回 { token: null, supported: false }
  */
-async function resolveTokenGroup(
+export async function resolveTokenGroup(
   deps: RouteDeps,
   refresh: boolean,
 ): Promise<{ token: TokenGroupState | null; supported: boolean }> {

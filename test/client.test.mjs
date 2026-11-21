@@ -47,7 +47,9 @@ function createHookRuntime() {
 }
 
 const settle = async () => {
-  for (let i = 0; i < 5; i += 1) await Promise.resolve();
+  // 12 而不是 5：分组兜底那条链要多走两跳（/balance → /state → setState），
+  // 5 跳时更新还没落进 state 槽，mount 就以为「没东西可应用」提前退出了。
+  for (let i = 0; i < 12; i += 1) await Promise.resolve();
   await new Promise((resolve) => setTimeout(resolve, 0));
 };
 
@@ -159,7 +161,7 @@ describe('dsh-aimy client', () => {
     return tree;
   };
 
-  it('只注册三处：侧栏图标 + 主区面板 + 输入框下方余额胶囊（不再注册设置页分区）', () => {
+  it('只注册三处：侧栏图标 + 主区面板 + 余额胶囊（不再注册设置页分区）', () => {
     assert.ok(registry.entries.has('sidebar.panellist:dsh-aimy'), '缺侧栏图标');
     assert.ok(registry.entries.has('main:dsh-aimy'), '缺主区面板');
     assert.ok(registry.entries.has('conversation.composer.dock:dsh-aimy-balance'), '缺余额胶囊');
@@ -552,6 +554,22 @@ describe('dsh-aimy client', () => {
     const respond = (data) => async () => ({ text: async () => JSON.stringify({ success: true, data }) });
     const balanceBody = (extra) => ({ ok: true, profile: 'aimy', displayName: 'Aimy-艾米', refreshSeconds: 300, ...extra });
 
+    /** 这一处注册的是一行（分组胶囊 + 余额胶囊），按 data-composer-stat 取各自那颗。 */
+    const pillOf = (tree, kind) => {
+      // 分组胶囊裹在 position:relative 的锚点里（菜单要相对它绝对定位），所以递归找
+      return elements(tree).find((el) => el.props && el.props['data-composer-stat'] === kind) || null;
+    };
+
+    const realGroups = {
+      name: 'DeepSeek-自部署',
+      ratio: 0.25,
+      allowSwitch: true,
+      groups: [
+        { name: 'DeepSeek-官方正版', symbol: 'DeepSeek-官方正版', ratio: 0.7 },
+        { name: 'DeepSeek-自部署', symbol: 'DeepSeek-自部署', ratio: 0.25 },
+      ],
+    };
+
     it('注册在输入框下方的统计行（composer.dock），排在 tok/s 与缓存命中右侧', () => {
       const entry = barEntry();
       assert.ok(entry, '没有注册余额胶囊');
@@ -582,7 +600,7 @@ describe('dsh-aimy client', () => {
         // 那一行跟 tok/s 并排，撑宽了会把整行挤歪，所以正文只要站名 + 金额
         assert.ok(text.includes('Aimy余额：$93.79'), '应显示「Aimy余额：$93.79」，实际：' + text);
         assert.equal(text.includes('$390.53'), false, '额度不该占正文，实际：' + text);
-        const title = tree.props.title;
+        const title = pillOf(tree, 'balance').props.title;
         assert.ok(title.includes('Aimy-艾米'), 'tooltip 要说是哪个站，实际：' + title);
         assert.ok(title.includes('$93.79 / $390.53'), 'tooltip 要有额度，实际：' + title);
         assert.ok(title.includes('剩 24%'), 'tooltip 要有剩余百分比，实际：' + title);
@@ -611,7 +629,7 @@ describe('dsh-aimy client', () => {
         const tree = await mount(barEntry().component);
         const text = textOf(tree);
         assert.ok(text.includes('Aimy余额：不可用'), '失败要说清楚，实际：' + text);
-        assert.ok(tree.props.title.includes('Aimy-艾米'), 'tooltip 仍要显示是哪个站');
+        assert.ok(pillOf(tree, 'balance').props.title.includes('Aimy-艾米'), 'tooltip 仍要显示是哪个站');
       });
     });
 
@@ -633,13 +651,171 @@ describe('dsh-aimy client', () => {
         return { text: async () => JSON.stringify({ success: true, data: balanceBody({ view: balanceView }) }) };
       }, async () => {
         const tree = await mount(barEntry().component);
-        assert.equal(urls.length, 1, '首屏拉一次');
-        assert.match(urls[0], /\/balance$/);
-        tree.props.onClick();
+        const hits = () => urls.filter((u) => u.includes('/balance'));
+        assert.equal(hits().length, 1, '首屏拉一次，实际：' + urls.join(' | '));
+        assert.match(hits()[0], /\/balance$/);
+        pillOf(tree, 'balance').props.onClick();
         await settle();
-        assert.equal(urls.length, 2, '点击应再拉一次');
-        assert.match(urls[1], /\/balance\?refresh=1$/, '点击必须绕过缓存');
+        assert.equal(hits().length, 2, '点击应再拉一次，实际：' + urls.join(' | '));
+        assert.match(hits()[1], /\/balance\?refresh=1$/, '点击必须绕过缓存');
       });
     });
+
+    it('分组胶囊显示当前分组，倍率与「点击切换」进 tooltip', async () => {
+      runtime.resetState();
+      await withFetch(respond(balanceBody({ view: balanceView, group: realGroups })), async () => {
+        const tree = await mount(barEntry().component);
+        const text = textOf(tree);
+        assert.ok(text.includes('分组：DeepSeek-自部署'), '要显示当前分组，实际：' + text);
+        const title = pillOf(tree, 'group').props.title;
+        assert.ok(title.includes('0.25x'), 'tooltip 要有倍率，实际：' + title);
+        assert.ok(title.includes('点击切换'), '要提示可以点，实际：' + title);
+      });
+    });
+
+    it('站点不支持切换时只读：没有箭头、点不动', async () => {
+      runtime.resetState();
+      const readOnly = { name: 'DeepSeek-自部署', ratio: 0.25, allowSwitch: false, groups: [] };
+      await withFetch(respond(balanceBody({ view: balanceView, group: readOnly })), async () => {
+        const tree = await mount(barEntry().component);
+        assert.equal(pillOf(tree, 'group').props.onClick, undefined, '不支持切换就不该有点击行为');
+        assert.equal(textOf(tree).includes('▾'), false, '没有箭头才对，实际：' + textOf(tree));
+      });
+    });
+
+    it('点开菜单列出全部分组，点一项就走 /switch', async () => {
+      runtime.resetState();
+      const calls = [];
+      const handler = async (url, init) => {
+        const target = String(url);
+        calls.push({ url: target, method: (init && init.method) || 'GET', body: init && init.body });
+        if (target.includes('/switch')) {
+          return { text: async () => JSON.stringify({ success: true, data: { state: { token: { group: 'DeepSeek-官方正版' } } } }) };
+        }
+        return { text: async () => JSON.stringify({ success: true, data: balanceBody({ view: balanceView, group: realGroups }) }) };
+      };
+      await withFetch(handler, async () => {
+        const comp = barEntry().component;
+        const tree = await mount(comp);
+        pillOf(tree, 'group').props.onClick({
+          currentTarget: { getBoundingClientRect: () => ({ left: 12, top: 500, width: 220 }) },
+        });
+        await settle();
+        const opened = await mount(comp);
+        const menu = elements(opened).find((el) => el.props['data-aimy-group-menu'] !== undefined);
+        assert.ok(menu, '点一下应该弹菜单');
+        const items = elements(menu).filter((el) => el.type === 'button');
+        assert.equal(items.length, 2, '两个分组就该有两项，实际：' + items.length);
+        const pick = items.find((el) => textOf(el).includes('DeepSeek-官方正版'));
+        assert.ok(pick, '菜单里没有目标分组');
+        pick.props.onClick();
+        await settle();
+        const sent = calls.filter((call) => call.url.includes('/switch'));
+        assert.equal(sent.length, 1, '应该发一次 /switch，实际：' + sent.length);
+        assert.equal(sent[0].method, 'POST');
+        assert.equal(JSON.parse(sent[0].body).group, 'DeepSeek-官方正版');
+      });
+    });
+
+    it('菜单绝对定位在分组胶囊正上方（不依赖视口坐标）', async () => {
+      runtime.resetState();
+      await withFetch(respond(balanceBody({ view: balanceView, group: realGroups })), async () => {
+        const comp = barEntry().component;
+        const tree = await mount(comp);
+        pillOf(tree, 'group').props.onClick({});
+        await settle();
+        const opened = await mount(comp);
+        const menu = elements(opened).find((el) => el.props['data-aimy-group-menu'] !== undefined);
+        assert.ok(menu, '点一下应该弹菜单');
+        const style = menu.props.style;
+        // 相对胶囊定位：不再用 fixed + 视口坐标（宿主有祖先建立包含块，会把视口坐标整体平移，
+        // 结果菜单跑到右边余额胶囊头上）
+        assert.equal(style.position, 'absolute', '菜单应相对锚点绝对定位，实际：' + style.position);
+        assert.equal(style.left, 0, '菜单左边缘应与分组胶囊对齐，实际：' + style.left);
+        assert.equal(style.bottom, 'calc(100% + 6px)', '菜单应贴在胶囊上沿，实际：' + style.bottom);
+        assert.equal(style.width, 'max-content');
+        // 菜单必须是分组胶囊的兄弟节点，父级 position:relative 才是它的锚
+        const anchor = elements(opened).find((el) => el.props['data-aimy-group-anchor'] !== undefined);
+        assert.ok(anchor, '没找到菜单锚点');
+        assert.equal(anchor.props.style.position, 'relative', '锚点必须 position:relative');
+        const anchorKids = elements(anchor);
+        assert.ok(anchorKids.includes(menu), '菜单应该挂在锚点里');
+        const groupPillEl = anchorKids.find((el) => el.props['data-composer-stat'] === 'group');
+        assert.ok(groupPillEl, '锚点里应该有分组胶囊');
+        // 菜单在 DOM 顺序上跟在胶囊后面，但视觉上在它上方
+        assert.ok(anchorKids.indexOf(menu) > anchorKids.indexOf(groupPillEl), '菜单应排在分组胶囊之后');
+      });
+    });
+
+    it('分组文案：未加载 / 读不到 / 有名字 / 有接口但没报当前分组', () => {
+      assert.equal(module.groupText(undefined), '分组：…');
+      assert.equal(module.groupText(null), '分组：—');
+      assert.equal(module.groupText({ name: 'DeepSeek-自部署', allowSwitch: true, groups: [] }), '分组：DeepSeek-自部署');
+      assert.equal(module.groupText({ name: '', allowSwitch: true, groups: [] }), '分组：未设置');
+      assert.equal(module.groupText({ name: '', allowSwitch: false, groups: [] }), '分组：—');
+      assert.equal(module.ratioText(0.25), '0.25x');
+      assert.equal(module.ratioText(undefined), '');
+    });
+
+    it('宿主没在 /balance 里给分组时，用 /state 的 token 兜底', async () => {
+      runtime.resetState();
+      const urls = [];
+      const handler = async (url) => {
+        const target = String(url);
+        urls.push(target);
+        if (target.includes('/state')) {
+          return {
+            text: async () =>
+              JSON.stringify({
+                success: true,
+                data: {
+                  ...stateBody,
+                  token: {
+                    group: 'DeepSeek-自部署',
+                    backupGroup: '',
+                    ratio: 0.25,
+                    allowGroupSwitch: true,
+                    groups: realGroups.groups,
+                  },
+                },
+              }),
+          };
+        }
+        return { text: async () => JSON.stringify({ success: true, data: balanceBody({ view: balanceView }) }) };
+      };
+      await withFetch(handler, async () => {
+        const tree = await mount(barEntry().component);
+        const text = textOf(tree);
+        assert.ok(urls.some((u) => u.includes('/state')), '应该补拉一次 /state，实际：' + urls.join(', '));
+        assert.ok(text.includes('分组：DeepSeek-自部署'), '兜底后要显示分组名，实际：' + text);
+      });
+    });
+
+    it('groupFromToken：与宿主 readGroup() 同一套映射', () => {
+      assert.equal(module.groupFromToken(null), null);
+      const mapped = module.groupFromToken({
+        group: 'DeepSeek-自部署',
+        backupGroup: '',
+        ratio: 0.25,
+        allowGroupSwitch: true,
+        groups: [{ name: 'A', symbol: 'a', ratio: 1, public: true }],
+      });
+      assert.equal(mapped.name, 'DeepSeek-自部署');
+      assert.equal(mapped.ratio, 0.25);
+      assert.equal(mapped.allowSwitch, true);
+      assert.deepEqual(mapped.groups, [{ name: 'A', symbol: 'a', ratio: 1 }]);
+      // 没报名字但有 symbol 时用 symbol；不允许切换时 allowSwitch 为 false
+      const noName = module.groupFromToken({
+        group: '',
+        backupGroup: '',
+        ratio: undefined,
+        allowGroupSwitch: false,
+        groups: [{ symbol: 'only-symbol', name: '', ratio: 2, public: true }],
+      });
+      assert.equal(noName.name, '');
+      assert.equal(noName.allowSwitch, false);
+      assert.equal(noName.groups[0].name, 'only-symbol');
+    });
   });
+
 });

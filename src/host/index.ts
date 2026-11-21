@@ -33,9 +33,9 @@ import { CatalogStore, GroupCache } from './state';
 import { bindPetBalance } from './balance';
 import { BalanceCache, cacheKeyFor, readBalanceView, type BalanceTemplate, type CachedBalance } from './balance-view';
 import { apiRoot } from './relay';
-import { describeError, readState, switchGroup, type RouteDeps } from './routes';
+import { describeError, readState, resolveTokenGroup, switchGroup, type RouteDeps } from './routes';
 import { DEFAULT_BALANCE_REFRESH_SECONDS } from '../shared/types';
-import type { BalanceResponse, RelayModel } from '../shared/types';
+import type { BalanceGroup, BalanceResponse, RelayModel } from '../shared/types';
 
 // 供测试与调试：从适配器模块里挑出可挂载的 cordis 插件
 export { pickPlugin } from './provider';
@@ -128,6 +128,10 @@ export interface BalanceBarConfig {
   refreshSeconds?: number;
   /** 自定义查询模板；null = 只用内置探测链 */
   template?: BalanceTemplate | null;
+  /**
+   * 自定义单价，给站点自造模型用（公开牌价表里查不到的那些）。
+   * 键是模型 id，值是该模型的 USD / 1M tokens 单价；会随 `/balance` 下发给客户端合并。
+   */
 }
 
 const DEFAULT_KEY_REF = 'ONEHUB_API_KEY';
@@ -658,6 +662,38 @@ export function apply(ctx: any, config?: Config): void {
   };
 
   /**
+   * 分组胶囊要的数据：当前分组 + 可选项。
+   *
+   * 只走 `resolveTokenGroup` 的缓存路径（新鲜直接返回、过期先给旧值再后台补），
+   * **不强制网络**：点一下余额胶囊只是想看钱，不该顺带把分组接口也打一遍。
+   * 站点没有 `/v1/token/group`（new-api / sub2api 之类）时给 `allowSwitch:false`，
+   * 客户端据此把胶囊降级成只读文字；没凭证 / 网络抖动则返回 null，胶囊显示「—」。
+   */
+  const readGroup = async (profile: ProfileConfig): Promise<BalanceGroup | null> => {
+    if (!profile.baseURL) return null;
+    try {
+      const deps = await buildDeps(profile);
+      if (!deps.apiKey) return null;
+      const { token, supported } = await resolveTokenGroup(deps, false);
+      if (!supported) return { name: '', allowSwitch: false, groups: [] };
+      if (!token) return null;
+      return {
+        name: token.group,
+        ratio: token.ratio,
+        allowSwitch: token.allowGroupSwitch && token.groups.length > 0,
+        groups: token.groups.map((group) => ({
+          name: group.name,
+          symbol: group.symbol,
+          ratio: group.ratio,
+        })),
+      };
+    } catch {
+      // 分组只是附属信息：读不到不该让整条余额报错
+      return null;
+    }
+  };
+
+  /**
    * 取一次余额（带缓存）。
    *
    * 三条路径：新鲜缓存 → 直接给；过期缓存 → 先给旧值 + 后台刷新；都没有 → 同步等一次。
@@ -670,6 +706,7 @@ export function apply(ctx: any, config?: Config): void {
       profile: profile.id,
       displayName: profile.displayName,
       refreshSeconds: normalizeRefreshSeconds(bar?.refreshSeconds),
+      // 自定义单价随读数一起下发：花费胶囊只用一次请求就能拿到倍率 + 价格覆盖表
     };
     if (bar?.enabled === false) {
       return { ok: false, view: null, disabled: true, ...base };
@@ -876,7 +913,9 @@ export function apply(ctx: any, config?: Config): void {
               const explicit = url.searchParams.get('profile');
               const target = balanceProfileFor(isProfileId(explicit) ? explicit : undefined);
               const refresh = url.searchParams.get('refresh') === '1';
-              sendJson(res, 200, { success: true, data: await readBalance(target, refresh) });
+              // 分组与余额一起回：两颗胶囊并排显示，分两次请求只会让它们不同步
+              const balance = await readBalance(target, refresh);
+              sendJson(res, 200, { success: true, data: { ...balance, group: await readGroup(target) } });
               return;
             }
 

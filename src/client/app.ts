@@ -4,7 +4,16 @@
  */
 import { BRAND_ICON_PATH } from '../shared/brand';
 import { needsDiagnostics } from '../shared/types';
-import { makeBalanceBar, formatMoney, summarize, pillLabel, shortName } from './balance-bar';
+import {
+  makeBalanceBar,
+  formatMoney,
+  groupFromToken,
+  groupText,
+  pillLabel,
+  ratioText,
+  shortName,
+  summarize,
+} from './balance-bar';
 import { makeSection } from './section';
 import type * as ReactNS from 'react';
 
@@ -104,7 +113,19 @@ export function makeFactory(): (require: (mod: string) => any) => any {
     // needsDiagnostics / summarize / formatMoney 一并导出：都是纯函数，
     // 供单测直接验证「什么状态才值得拉诊断」与「余额文案怎么拼」。
     // DSH 只用 apply / inject / name，多导出不影响契约。
-    module.exports = { apply, inject, name, needsDiagnostics, summarize, formatMoney, pillLabel, shortName };
+    module.exports = {
+      apply,
+      inject,
+      name,
+      needsDiagnostics,
+      summarize,
+      formatMoney,
+      pillLabel,
+      shortName,
+      groupFromToken,
+      groupText,
+      ratioText,
+    };
     return module.exports;
   };
 }

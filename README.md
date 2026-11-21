@@ -11,7 +11,7 @@ DSH（DeepSeek Harness）插件 **dsh-Aimy**：解决中转站多分组多倍率
 | 入口 | 插槽 | 说明 |
 |---|---|---|
 | 首页左侧栏图标 + 主区面板「**Aimy-艾米**」 | `sidebar.panellist`（order 30）+ `main`（key `dsh-aimy`） | 整页面板，撑满主区、自带滚动 |
-| 输入框下方统计栏右侧的余额 | `conversation.composer.dock`（id `dsh-aimy-balance`，order 10） | 胶囊 `$93.45`，tooltip 含站名/额度/剩余百分比，点击立即刷新 |
+| 输入框下方统计栏右侧的余额 + 分组 | `conversation.composer.dock`（id `dsh-aimy-balance`，order 10） | 两颗胶囊：`分组：DeepSeek-自部署`（点开可切）与 `Aimy余额：$93.45`（点击立即刷新） |
 
 - 面板 id、`main` 的 key、包名一致，都是 `dsh-aimy`；sidebar 点图标时把 `activePanelId` 设成该 id，`main` 据此命中。
 - 两处注册都在 `src/client/app.ts` 的 `apply()` 里，`inject = ['slots']`。
@@ -290,17 +290,21 @@ host 半侧在 `/dsh-aimy-relay` 前缀下暴露（仅供本插件的浏览器�
 
 ## 余额胶囊
 
-输入框下方那一行统计栏（`143 tok/s · 缓存命中 96% · 7%`）的最右侧，多一颗余额胶囊：
+输入框下方那一行统计栏（`143 tok/s · 缓存命中 96% · 7%`）的最右侧，多两颗胶囊：
 
 ```text
-  ⌁ 143 tok/s    ⛁ 缓存命中 96%    ◔ 7%    ▭ Aimy余额：$93.45
+  ⌁ 143 tok/s    ⛁ 缓存命中 96%    ◔ 7%    ▤ 分组：DeepSeek-自部署 ▾    ▭ Aimy余额：$93.45
 ```
 
-胶囊正文是「站名余额：金额」（`Aimy-艾米` 取第一段 → `Aimy余额：$93.45`）；
-额度 / 剩余百分比 / 更新时间都在 hover 的 tooltip 里 —— 那一行跟原生统计项共排，
-撑宽了会把整行挤歪。
+**分组胶囊**（左）：`分组：<当前分组名>`。站点开了 `allow_group_switch` 且确实有多项分组时，
+右侧带 `▾`，点一下在**分组胶囊正上方**弹出分组菜单（名称 + 倍率，绝对定位相对胶囊，不跟视口坐标走），点一项就调 `POST /switch`，成功后余额跟着重查；
+不可切换时没有箭头、点不动。分组名可能很长（真实站点有「Claude-MAX（原1.8x 限时特价1.3x）」这种），
+所以标签 `maxWidth:180` + 省略号，完整名称、倍率与提示都在 tooltip 里。没取到时显示 `分组：…`，
+站点不报分组显示 `分组：—`，有接口但当前为空显示 `分组：未设置`。
 
-点一下立即刷新（绕过缓存）；页面不可见（切到别的标签页）时不轮询。
+**余额胶囊**（右）：正文是「站名余额：金额」（`Aimy-艾米` 取第一段 → `Aimy余额：$93.45`）；
+额度 / 剩余百分比 / 更新时间都在 hover 的 tooltip 里 —— 那一行跟原生统计项共排，
+撑宽了会把整行挤歪。点一下立即刷新（绕过缓存）；页面不可见（切到别的标签页）时不轮询。
 
 **放在哪**：`dsh-client-ui-chat` 注册的 `conversation.composer.dock`（`kind:'list'`，
 `scope:'session'`，`.dock{display:flex;align-items:center;justify-content:center;gap:12px}`）。
@@ -308,7 +312,8 @@ host 半侧在 `/dsh-aimy-relay` 前缀下暴露（仅供本插件的浏览器�
 我们用 `order: 10` 排在它们右侧，样式照 `StatsPills.module.css` 的 `.pill`：
 `padding:1px 8px`、tertiary 文字色、字号比正文小 1px、`tabular-nums`、14px 图标。
 因为是 list 槽，其他插件也能往同一行加东西，不会互相顶掉；关掉开关时组件返回 `null`，
-那行不留空位。
+那行不留空位。两颗胶囊包在一个 `display:inline-flex; gap:12px` 的包裹 span 里，
+`order: 10` 只占一个槽位，所以它们不会被别的插件插到中间。
 
 > 只在有会话的界面出现（dock 属于 session 作用域）。欢迎页（hero）上没有输入框统计栏，
 > 也就没有这颗胶囊。
@@ -358,6 +363,10 @@ balanceBar:
 ### 刷新与缓存
 
 - 客户端：进页面拉一次，之后按 `refreshSeconds`（默认 300 秒）轮询；`document.hidden` 时跳过，切回来补一次。
+- 分组信息跟着 `/balance` 一起回来，宿主读它走 `resolveTokenGroup(deps, false)`：有缓存就零网络，
+  没缓存才等一次 `/v1/token/group`（约 170ms），之后 5 分钟走「分组信息缓存」。
+- `/balance` 没带 `group` 时（宿主版本落后、或站点没接分组接口），客户端拿 `/state` 里的 `token` 兜一次，
+  胶囊不会一直停在 `分组：…`。
 - 宿主：60 秒缓存（`BALANCE_CACHE_TTL_MS`），过期后 **stale-while-revalidate** —— 先给旧值、后台补新的。
   多个标签页 / 反复切面板不会把站点当探针打。
 - 关掉整条：`balanceBar.enabled: false`（组件返回 `null`，不留空白行）。
@@ -374,7 +383,7 @@ balanceBar:
 - `test/group-cache.test.mjs`：分组缓存（TTL / stale-while-revalidate / 刷新去重 / 404 记住 / 抖动不缓存）
 - `test/balance.test.mjs`：余额桥（三站真实报文形状 + 探测链 + 三种 wire 形状 + 注册幂等）
 - `test/balance-view.test.mjs`：底部条的读数层（模板 path/script 取值、模板优先与回落、密钥打码、缓存保留旧值）
-- `test/client.test.mjs`：client 半侧（走 `window.__ModuleLoader__` 契约，假 hooks 渲染真 React 元素树）
+- `test/client.test.mjs`：client 半侧（走 `window.__ModuleLoader__` 契约，假 hooks 渲染真 React 元素树）、分组/余额胶囊
   - 三处注册齐全、侧栏 id 必须等于 `main` 的 key
   - 侧栏图标是 svg 且跟随 `size`/`active`
   - 面板展示默认地址并标注「预设地址（不可修改）」
@@ -402,9 +411,9 @@ src/
   host/balance-view.ts  余额读数：自定义模板 + 内置探测链 + 缓存（底部条用）
   host/index.ts       Cordis 插件入口（name / inject / apply）
   client/index.ts     __ModuleLoader__ 外壳
-  client/app.ts       装配层：注册 sidebar.panellist + main
+  client/app.ts       装配层：注册 sidebar.panellist / main / composer.dock
   client/section.ts   「中转站」设置分区 UI
-  client/balance-bar.ts  余额胶囊（注册进 conversation.composer.dock）
+  client/balance-bar.ts  分组胶囊 + 余额胶囊（注册进 conversation.composer.dock）
 ```
 
 ## 协议（三种，与 pi-ai 的 supportedProtocols() 一致）

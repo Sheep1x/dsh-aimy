@@ -189,9 +189,26 @@ export interface BalanceView {
   fetchedAt: string;
 }
 
+/**
+ * 分组胶囊要的数据：当前分组 + 可切换列表。
+ *
+ * `name` 为空串 = 站点有分组接口但没报当前分组；`allowSwitch=false` 时胶囊只读
+ * （站点没开 `allow_group_switch`，或者根本没有 `/v1/token/group`）。
+ */
+export interface BalanceGroup {
+  name: string;
+  /** 分组倍率（站点自己的口径，1 = 原价） */
+  ratio?: number;
+  allowSwitch: boolean;
+  /** 可选项；只留渲染要用的三个字段，别把整份 token 报文透给前端 */
+  groups: { name: string; symbol?: string; ratio?: number }[];
+}
+
 export interface BalanceResponse {
   ok: boolean;
   view: BalanceView | null;
+  /** 当前分组；读不到（没凭证 / 站点没这接口 / 网络失败）时为 null */
+  group?: BalanceGroup | null;
   /** 本次失败原因（可能同时带上一轮成功的 view） */
   error?: string;
   /** 配置里关掉了余额条：客户端整条不渲染 */
@@ -203,6 +220,7 @@ export interface BalanceResponse {
   displayName?: string;
   /** 轮询间隔（秒），由配置决定；客户端据此设定定时器 */
   refreshSeconds?: number;
+  /** 用户自定义单价（覆盖内置牌价表，给站点自造模型用） */
 }
 
 /** 余额条每分钟最多查一次；轮询间隔由配置决定。 */

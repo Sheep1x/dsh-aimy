@@ -1883,6 +1883,42 @@ describe('底部余额条（GET /balance）', () => {
     }
   });
 
+  it('同一次响应里带上当前分组与可选项（分组胶囊要用）', async () => {
+    const env = await setup();
+    try {
+      const { body } = await json(env.plugin.base + '/balance');
+      const group = body.data.group;
+      assert.ok(group, '缺分组信息');
+      // 假站点报的是 symbol（真实站点报的是展示名，两者都原样透传）
+      assert.equal(group.name, 'default');
+      assert.equal(group.ratio, 1);
+      assert.equal(group.allowSwitch, true);
+      assert.deepEqual(group.groups.map((g) => g.name), ['默认', 'VIP']);
+      // 只透渲染要用的字段，别把整份 token 报文丢给前端
+      assert.deepEqual(Object.keys(group.groups[0]).sort(), ['name', 'ratio', 'symbol']);
+    } finally {
+      await env.close();
+    }
+  });
+
+  it('切组之后 /balance 里的分组名跟着变', async () => {
+    const env = await setup();
+    try {
+      const first = await json(env.plugin.base + '/balance');
+      assert.equal(first.body.data.group.name, 'default');
+      const switched = await json(env.plugin.base + '/switch?profile=aimy', {
+        method: 'POST',
+        body: JSON.stringify({ group: 'vip' }),
+      });
+      assert.equal(switched.status, 200);
+      const after = await json(env.plugin.base + '/balance');
+      assert.equal(after.body.data.group.name, 'vip');
+      assert.equal(after.body.data.group.ratio, 0.5);
+    } finally {
+      await env.close();
+    }
+  });
+
   it('缓存：连续请求只打一次站点，refresh=1 才真的重查', async () => {
     const env = await setup();
     try {

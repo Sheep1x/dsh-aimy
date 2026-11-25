@@ -2,7 +2,7 @@
  * client 半侧装配层：注入 react → 组装设置分区与侧栏面板 → 注册进 DSH 插槽。
  * 页面本身在 section.ts，这里只做装配。
  */
-import { BRAND_ICON_PATH } from '../shared/brand';
+import { BRAND_ICON_PATH, BRAND_RING_BLUE, BRAND_RING_PATH } from '../shared/brand';
 import { needsDiagnostics } from '../shared/types';
 import {
   makeBalanceBar,
@@ -51,7 +51,10 @@ export function makeFactory(): (require: (mod: string) => any) => any {
       }
     }
 
-    /** 侧栏图标 = 中转站官方 logo 的加粗线稿，数据在 shared/brand.ts。 */
+    /**
+     * 侧栏图标 = 官方 logo 的两层线稿：主体（跟随主题色）+ 蓝色斜环。
+     * 先画主体再画斜环，斜环压过描边的地方才和原图一致。数据在 shared/brand.ts。
+     */
     function RelayIcon(props: any): any {
       const size = props && typeof props.size === 'number' ? props.size : 18;
       const active = Boolean(props && props.active);
@@ -61,11 +64,11 @@ export function makeFactory(): (require: (mod: string) => any) => any {
           width: size,
           height: size,
           viewBox: '0 0 24 24',
-          fill: 'currentColor',
           style: { display: 'block', opacity: active ? 1 : 0.8 },
           'aria-hidden': 'true',
         },
-        h('path', { d: BRAND_ICON_PATH, fillRule: 'evenodd', clipRule: 'evenodd' }),
+        h('path', { key: 'mark', d: BRAND_ICON_PATH, fill: 'currentColor' }),
+        h('path', { key: 'ring', d: BRAND_RING_PATH, fill: BRAND_RING_BLUE }),
       );
     }
 

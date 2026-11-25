@@ -175,32 +175,41 @@ describe('dsh-aimy client', () => {
     assert.equal(panel.id, main.key, '侧栏 id 必须等于 main 的 key，否则点图标打不开面板');
   });
 
-  it('侧栏图标是中转站 logo 的矢量路径，跟随 size / active / 主题色', () => {
+  it('侧栏图标是官方 logo 的两层矢量路径，跟随 size / active / 主题色', () => {
     const Icon = registry.entries.get('sidebar.panellist:dsh-aimy').component;
     const tree = Icon({ size: 18, active: true });
 
     assert.equal(tree.type, 'svg');
     assert.equal(tree.props.width, 18);
     assert.equal(tree.props.height, 18);
-    // 单色路径：用 currentColor，才能跟随亮/暗主题
-    assert.equal(tree.props.fill, 'currentColor');
 
     const paths = elements(tree).filter((el) => el.type === 'path');
-    assert.equal(paths.length, 1, '应是一条闭合轮廓');
-    const d = String(paths[0].props.d ?? '');
-    assert.ok(d.length > 200, '路径应有实际轮廓数据，实际长度：' + d.length);
-    assert.match(d, /^M[\d.]/u, '路径应以 M 起笔');
-    // 多段子路径（外轮廓 + 孔洞）拼接，每段都必须闭合
-    // 段之间用空格分隔，先按 M/m 切段再去掉首尾空白
-    const subpaths = (d.match(/[Mm][^Mm]*/gu) ?? []).map((seg) => seg.trim());
-    assert.ok(subpaths.length >= 1, '应至少有一段子路径');
-    for (const seg of subpaths) {
-      assert.match(seg, /[Zz]$/u, '每段子路径都必须闭合，实际段落：' + seg.slice(-20));
+    assert.equal(paths.length, 2, '主体 + 蓝色斜环两条 path');
+    const [mark, ring] = paths;
+
+    // 主体用 currentColor 跟随亮/暗主题，斜环固定品牌蓝
+    assert.equal(mark.props.fill, 'currentColor', '主体应跟随主题色');
+    assert.equal(ring.props.fill, '#347AFE', '斜环应用品牌蓝');
+
+    for (const [name, path] of [['主体', mark], ['斜环', ring]]) {
+      const d = String(path.props.d ?? '');
+      assert.ok(d.length > 200, name + '路径应有实际轮廓数据，实际长度：' + d.length);
+      assert.match(d, /^M[\d.]/u, name + '路径应以 M 起笔');
+      // 段之间用 M 分隔，每段都要闭合
+      const subpaths = (d.match(/[Mm][^Mm]*/gu) ?? []).map((seg) => seg.trim());
+      assert.ok(subpaths.length >= 1, name + '应至少有一段子路径');
+      for (const seg of subpaths) {
+        assert.match(seg, /[Zz]$/u, name + '每段子路径都必须闭合，实际段落：' + seg.slice(-20));
+      }
+      assert.ok(!/NaN|undefined|null/u.test(d), name + '路径数据不得含非法值');
+      const segments = (d.match(/[Ll]/gu) ?? []).length;
+      assert.ok(segments >= 30, name + '轮廓点数过少会丢失形状，实际：' + segments);
     }
-    assert.ok(!/NaN|undefined|null/u.test(d), '路径数据不得含非法值');
-    // 轮廓来自位图追踪：点数应足够表达 logo 细节
-    const segments = (d.match(/[Ll]/gu) ?? []).length;
-    assert.ok(segments >= 30, '轮廓点数过少会丢失 logo 形状，实际：' + segments);
+
+    // 渲染顺序：先主体后斜环，斜环才能盖在描边上
+    const kids = tree.props.children;
+    const order = Array.isArray(kids) ? kids : [kids];
+    assert.ok(order.indexOf(mark) < order.indexOf(ring), '斜环必须后画');
 
     // active 状态影响不透明度
     const inactive = Icon({ size: 18, active: false });
@@ -214,13 +223,12 @@ describe('dsh-aimy client', () => {
     const svgs = elements(tree).filter((el) => el.type === 'svg');
     assert.ok(svgs.length >= 1, '分区内容里应有品牌图标');
 
-    const brand = svgs.find((el) => {
-      const paths = elements(el).filter((p) => p.type === 'path');
-      return paths.some((p) => String(p.props.d ?? '').includes('M') && String(p.props.d ?? '').length > 200);
-    });
-    assert.ok(brand, '品牌图标的 path 数据应存在');
-    assert.equal(brand.props.fill, 'currentColor', '应跟随主题色');
+    const brand = svgs.find((el) => elements(el).some((p) => p.type === 'path' && p.props.fill === '#347AFE'));
+    assert.ok(brand, '应找到带蓝色斜环的品牌图标');
     assert.equal(brand.props.viewBox, '0 0 24 24');
+
+    const mark = elements(brand).find((p) => p.type === 'path' && p.props.fill === 'currentColor');
+    assert.ok(mark, '主体应跟随主题色');
   });
 
   it('地址显示为默认中转站地址', async () => {

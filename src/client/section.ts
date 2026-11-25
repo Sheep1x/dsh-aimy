@@ -5,7 +5,7 @@
  *
  * 样式只用 CSS 变量 --dsw-alias-*（主题跟随亮/暗），不依赖 UI 组件库。
  */
-import { BRAND_ICON_PATH } from '../shared/brand';
+import { BRAND_ICON_PATH, BRAND_RING_BLUE, BRAND_RING_PATH } from '../shared/brand';
 import {
   API_OPTIONS,
   DEFAULT_API,
@@ -590,7 +590,7 @@ export function makeSection(deps: SectionDeps) {
 
     /* ---- 头部：标题 + Tab ---- */
     const header = [
-      // 标题 + 品牌图标（与侧栏图标同一份 path）。
+      // 标题 + 品牌图标（与侧栏图标同一份 path：主体 + 蓝色斜环）。
       h(
         'div',
         { key: 'title', style: S.titleRow },
@@ -601,11 +601,11 @@ export function makeSection(deps: SectionDeps) {
             width: 22,
             height: 22,
             viewBox: '0 0 24 24',
-            fill: 'currentColor',
             style: { flex: 'none', opacity: 0.9 },
             'aria-hidden': 'true',
           },
-          h('path', { d: BRAND_ICON_PATH, fillRule: 'evenodd', clipRule: 'evenodd' }),
+          h('path', { key: 'mark', d: BRAND_ICON_PATH, fill: 'currentColor' }),
+          h('path', { key: 'ring', d: BRAND_RING_PATH, fill: BRAND_RING_BLUE }),
         ),
         h('span', { style: S.pageTitle }, PANEL_TITLE),
       ),

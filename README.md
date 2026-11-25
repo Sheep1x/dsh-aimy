@@ -16,7 +16,7 @@ DSH（DeepSeek Harness）插件 **dsh-Aimy**：解决中转站多分组多倍率
 - 面板 id、`main` 的 key、包名一致，都是 `dsh-aimy`；sidebar 点图标时把 `activePanelId` 设成该 id，`main` 据此命中。
 - 两处注册都在 `src/client/app.ts` 的 `apply()` 里，`inject = ['slots']`。
 - client 侧必须用 `react.createElement`（可变 children）；`react/jsx-runtime` 的 `jsx(type, props, key)` 第三参是 key，会把 `h(type, props, ...children)` 的子节点全部丢掉。
-- 面板头部与侧栏图标共用 `src/shared/brand.ts` 里的品牌路径。
+- 面板头部与侧栏图标共用 `src/shared/brand.ts` 里的两条品牌路径（`BRAND_ICON_PATH` 主体跟随主题色 + `BRAND_RING_PATH` 蓝色斜环），斜环必须后画才能盖在描边上。
 
 > **为什么不放设置页**：宿主 `dsh-client-ui-settings-general` 的 `navIcon(id)` 按分区 id
 > 硬编码图标，只认 `account` / `models` / `agent-presets` / `plugins` / `archived-sessions`，
@@ -385,7 +385,7 @@ balanceBar:
 - `test/balance-view.test.mjs`：底部条的读数层（模板 path/script 取值、模板优先与回落、密钥打码、缓存保留旧值）
 - `test/client.test.mjs`：client 半侧（走 `window.__ModuleLoader__` 契约，假 hooks 渲染真 React 元素树）、分组/余额胶囊
   - 三处注册齐全、侧栏 id 必须等于 `main` 的 key
-  - 侧栏图标是 svg 且跟随 `size`/`active`
+  - 侧栏图标是 svg（主体 + 蓝色斜环两条 path）且跟随 `size`/`active`
   - 面板展示默认地址并标注「预设地址（不可修改）」
   - 点地址 → 写剪贴板 → 提示「已复制」
   - 协议下拉四选项齐全、暗色适配、切换会 POST 保存
